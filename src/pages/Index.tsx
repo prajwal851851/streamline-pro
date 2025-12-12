@@ -1,11 +1,20 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { HeroSection } from "@/components/HeroSection";
+import { MovieCarousel } from "@/components/MovieCarousel";
+import { categories, movies } from "@/data/mockData";
 
 const Index = () => {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
+    <div className="pb-12">
+      <HeroSection />
+      
+      <div className="px-4 -mt-32 relative z-10 space-y-2">
+        {categories.map((category) => (
+          <MovieCarousel
+            key={category.name}
+            title={category.name}
+            movies={category.movies.length > 0 ? category.movies : movies}
+          />
+        ))}
       </div>
     </div>
   );
