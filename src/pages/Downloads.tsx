@@ -1,14 +1,13 @@
-import { Download, Trash2, Wifi, WifiOff } from "lucide-react";
+import { Download, Trash2, WifiOff } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { Button } from "@/components/ui/button";
-import { movies } from "@/data/mockData";
 import { MovieCard } from "@/components/MovieCard";
 import { toast } from "@/hooks/use-toast";
 
 const Downloads = () => {
-  const { downloads, removeFromDownloads } = useApp();
+  const { downloads, removeFromDownloads, movies } = useApp();
 
-  const handleRemove = (id: string) => {
+  const handleRemove = (id: number) => {
     removeFromDownloads(id);
     toast({ title: "Download removed" });
   };
@@ -46,14 +45,14 @@ const Downloads = () => {
                 style={{ animationDelay: `${index * 50}ms` }}
               >
                 <img
-                  src={movie.image}
+                  src={movie.image_url}
                   alt={movie.title}
                   className="w-32 h-20 object-cover rounded"
                 />
                 <div className="flex-1">
                   <h3 className="font-semibold mb-1">{movie.title}</h3>
                   <p className="text-sm text-muted-foreground mb-2">
-                    {movie.genre.join(" • ")} • {movie.duration}
+                    {movie.genre.join(" • ")} • {movie.duration_minutes} min
                   </p>
                   <div className="flex items-center gap-2">
                     <WifiOff className="w-4 h-4 text-green-500" />
@@ -82,11 +81,13 @@ const Downloads = () => {
             </p>
             <div className="mt-8">
               <h3 className="text-lg font-medium mb-4">Available for download</h3>
-              <div className="flex flex-wrap justify-center gap-4">
-                {movies.slice(0, 4).map((movie, index) => (
-                  <MovieCard key={movie.id} movie={movie} index={index} />
-                ))}
-              </div>
+              {movies.length > 0 && (
+                <div className="flex flex-wrap justify-center gap-4">
+                  {movies.slice(0, 4).map((movie, index) => (
+                    <MovieCard key={movie.id} movie={movie} index={index} />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

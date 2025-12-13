@@ -1,6 +1,5 @@
 import { Play, Info, Plus, Volume2, VolumeX } from "lucide-react";
-import { useState } from "react";
-import { featuredMovie } from "@/data/mockData";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/contexts/AppContext";
 import { toast } from "@/hooks/use-toast";
@@ -8,15 +7,24 @@ import { cn } from "@/lib/utils";
 
 export function HeroSection() {
   const [muted, setMuted] = useState(true);
-  const { addToMyList, isInMyList, addToHistory } = useApp();
+  const { movies, addToMyList, isInMyList, addToHistory } = useApp();
+  const featuredMovie = useMemo(
+    () =>
+      movies.find((m) => m.is_trending) ||
+      movies.find((m) => m.is_new) ||
+      movies[0],
+    [movies]
+  );
+
+  if (!featuredMovie) return null;
 
   const handlePlay = () => {
-    addToHistory(featuredMovie);
+    addToHistory(featuredMovie.id);
     toast({ title: "Now Playing", description: featuredMovie.title });
   };
 
   const handleAddToList = () => {
-    addToMyList(featuredMovie);
+    addToMyList(featuredMovie.id);
     toast({ title: "Added to My List" });
   };
 
@@ -25,7 +33,7 @@ export function HeroSection() {
       {/* Background Image */}
       <div className="absolute inset-0">
         <img
-          src={featuredMovie.image}
+          src={featuredMovie.image_url}
           alt={featuredMovie.title}
           className="w-full h-full object-cover animate-fade-in"
         />

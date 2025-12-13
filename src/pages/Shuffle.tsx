@@ -1,16 +1,19 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Shuffle as ShuffleIcon, RefreshCw, Play } from "lucide-react";
-import { movies } from "@/data/mockData";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/contexts/AppContext";
 import { toast } from "@/hooks/use-toast";
+import { Movie } from "@/types/api";
 
 const Shuffle = () => {
-  const [currentMovie, setCurrentMovie] = useState(movies[Math.floor(Math.random() * movies.length)]);
+  const { movies, addToHistory } = useApp();
+  const [currentMovie, setCurrentMovie] = useState<Movie | undefined>(() => movies[0]);
   const [isShuffling, setIsShuffling] = useState(false);
-  const { addToHistory } = useApp();
+
+  const hasMovies = useMemo(() => movies.length > 0, [movies]);
 
   const shuffle = () => {
+    if (!hasMovies) return;
     setIsShuffling(true);
     let count = 0;
     const interval = setInterval(() => {
@@ -24,8 +27,10 @@ const Shuffle = () => {
   };
 
   const handlePlay = () => {
-    addToHistory(currentMovie);
-    toast({ title: "Now Playing", description: currentMovie.title });
+    if (currentMovie) {
+      addToHistory(currentMovie.id);
+      toast({ title: "Now Playing", description: currentMovie.title });
+    }
   };
 
   return (
@@ -41,14 +46,15 @@ const Shuffle = () => {
         </p>
 
         {/* Selected Movie */}
-        <div className="relative max-w-sm mx-auto mb-8">
+        {currentMovie ? (
+          <div className="relative max-w-sm mx-auto mb-8">
           <div
             className={`aspect-[2/3] rounded-xl overflow-hidden shadow-2xl transition-all duration-300 ${
               isShuffling ? "animate-pulse scale-95" : "scale-100"
             }`}
           >
             <img
-              src={currentMovie.image}
+              src={currentMovie.image_url}
               alt={currentMovie.title}
               className="w-full h-full object-cover"
             />
@@ -56,9 +62,9 @@ const Shuffle = () => {
             <div className="absolute bottom-0 left-0 right-0 p-6 text-left">
               <h2 className="text-2xl font-bold mb-2">{currentMovie.title}</h2>
               <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
-                <span className="text-green-500 font-semibold">{currentMovie.match}% Match</span>
+                <span className="text-green-500 font-semibold">{currentMovie.match_score}% Match</span>
                 <span>{currentMovie.year}</span>
-                <span>{currentMovie.duration}</span>
+                <span>{currentMovie.duration_minutes} min</span>
                 <span className="px-1.5 py-0.5 bg-secondary rounded text-xs">
                   {currentMovie.rating}
                 </span>
@@ -68,7 +74,10 @@ const Shuffle = () => {
               </p>
             </div>
           </div>
-        </div>
+          </div>
+        ) : (
+          <p className="text-muted-foreground">No movies to shuffle yet.</p>
+        )}
 
         {/* Actions */}
         <div className="flex items-center justify-center gap-4">

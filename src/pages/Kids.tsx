@@ -1,8 +1,9 @@
 import { Users, Star } from "lucide-react";
-import { movies } from "@/data/mockData";
 import { MovieCard } from "@/components/MovieCard";
+import { useApp } from "@/contexts/AppContext";
 
 const Kids = () => {
+  const { movies } = useApp();
   const kidsMovies = movies.filter((m) => m.rating === "G" || m.rating === "PG-13");
 
   return (
@@ -29,11 +30,15 @@ const Kids = () => {
         </div>
 
         {/* Kids Content */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-          {[...kidsMovies, ...kidsMovies, ...kidsMovies].map((movie, index) => (
-            <MovieCard key={`${movie.id}-${index}`} movie={movie} index={index} />
-          ))}
-        </div>
+        {kidsMovies.length > 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            {kidsMovies.map((movie, index) => (
+              <MovieCard key={`${movie.id}-${index}`} movie={movie} index={index} />
+            ))}
+          </div>
+        ) : (
+          <p className="text-muted-foreground">No kids content yet.</p>
+        )}
       </div>
     </div>
   );

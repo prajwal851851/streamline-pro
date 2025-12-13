@@ -1,10 +1,9 @@
 import { List, Plus } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { MovieCard } from "@/components/MovieCard";
-import { movies } from "@/data/mockData";
 
 const MyList = () => {
-  const { myList } = useApp();
+  const { myList, movies } = useApp();
 
   return (
     <div className="min-h-screen pt-20 px-6 pb-12">
@@ -29,11 +28,13 @@ const MyList = () => {
             </p>
             <div className="mt-8">
               <h3 className="text-lg font-medium mb-4">Suggested for you</h3>
-              <div className="flex flex-wrap justify-center gap-4">
-                {movies.slice(0, 4).map((movie, index) => (
-                  <MovieCard key={movie.id} movie={movie} index={index} />
-                ))}
-              </div>
+              {movies.length > 0 && (
+                <div className="flex flex-wrap justify-center gap-4">
+                  {movies.slice(0, 4).map((movie, index) => (
+                    <MovieCard key={movie.id} movie={movie} index={index} />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

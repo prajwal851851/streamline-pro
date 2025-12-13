@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { Movie } from "@/data/mockData";
+import { Movie } from "@/types/api";
 import { MovieCard } from "./MovieCard";
 import { cn } from "@/lib/utils";
 

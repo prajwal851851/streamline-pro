@@ -1,14 +1,23 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Search as SearchIcon, X } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { Input } from "@/components/ui/input";
-import { movies } from "@/data/mockData";
 import { MovieCard } from "@/components/MovieCard";
+import { useApp } from "@/contexts/AppContext";
 
 const genres = ["All", "Action", "Comedy", "Drama", "Horror", "Sci-Fi", "Romance", "Documentary", "Animation"];
 
 const Search = () => {
+  const { movies } = useApp();
+  const [queryParams, setQueryParams] = useSearchParams();
+  const initialCategory = queryParams.get("category") || "All";
   const [query, setQuery] = useState("");
-  const [selectedGenre, setSelectedGenre] = useState("All");
+  const [selectedGenre, setSelectedGenre] = useState(initialCategory);
+
+  useEffect(() => {
+    const category = queryParams.get("category");
+    if (category) setSelectedGenre(category);
+  }, [queryParams]);
 
   const filteredMovies = useMemo(() => {
     return movies.filter((movie) => {
@@ -49,7 +58,15 @@ const Search = () => {
           {genres.map((genre) => (
             <button
               key={genre}
-              onClick={() => setSelectedGenre(genre)}
+              onClick={() => {
+                setSelectedGenre(genre);
+                if (genre === "All") {
+                  queryParams.delete("category");
+                  setQueryParams(queryParams, { replace: true });
+                } else {
+                  setQueryParams({ category: genre }, { replace: true });
+                }
+              }}
               className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
                 selectedGenre === genre
                   ? "bg-primary text-primary-foreground"

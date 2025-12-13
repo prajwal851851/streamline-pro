@@ -1,9 +1,10 @@
 import { TrendingUp } from "lucide-react";
-import { movies } from "@/data/mockData";
 import { MovieCard } from "@/components/MovieCard";
+import { useApp } from "@/contexts/AppContext";
 
 const Trending = () => {
-  const trendingMovies = movies.filter((m) => m.isTrending);
+  const { movies } = useApp();
+  const trendingMovies = movies.filter((m) => m.is_trending);
 
   return (
     <div className="min-h-screen pt-20 px-6 pb-12">

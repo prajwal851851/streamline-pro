@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Play, Plus, ThumbsUp, ChevronDown, Check, Heart, Download } from "lucide-react";
-import { Movie } from "@/data/mockData";
+import { Play, Plus, Check, Heart, Download } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Movie } from "@/types/api";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/contexts/AppContext";
 import { toast } from "@/hooks/use-toast";
@@ -12,7 +13,18 @@ interface MovieCardProps {
 
 export function MovieCard({ movie, index = 0 }: MovieCardProps) {
   const [isHovered, setIsHovered] = useState(false);
-  const { addToMyList, removeFromMyList, isInMyList, addToFavorites, removeFromFavorites, isFavorite, addToDownloads, isDownloaded, addToHistory } = useApp();
+  const navigate = useNavigate();
+  const {
+    addToMyList,
+    removeFromMyList,
+    isInMyList,
+    addToFavorites,
+    removeFromFavorites,
+    isFavorite,
+    addToDownloads,
+    isDownloaded,
+    addToHistory,
+  } = useApp();
 
   const inMyList = isInMyList(movie.id);
   const isFav = isFavorite(movie.id);
@@ -24,7 +36,7 @@ export function MovieCard({ movie, index = 0 }: MovieCardProps) {
       removeFromMyList(movie.id);
       toast({ title: "Removed from My List" });
     } else {
-      addToMyList(movie);
+      addToMyList(movie.id);
       toast({ title: "Added to My List" });
     }
   };
@@ -43,14 +55,15 @@ export function MovieCard({ movie, index = 0 }: MovieCardProps) {
   const handleDownload = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!downloaded) {
-      addToDownloads(movie);
+      addToDownloads(movie.id);
       toast({ title: "Download started", description: movie.title });
     }
   };
 
   const handlePlay = () => {
-    addToHistory(movie);
+    addToHistory(movie.id);
     toast({ title: "Now Playing", description: movie.title });
+    navigate(`/movies/${movie.id}`);
   };
 
   return (
@@ -62,6 +75,7 @@ export function MovieCard({ movie, index = 0 }: MovieCardProps) {
       style={{ animationDelay: `${index * 50}ms` }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      onClick={() => navigate(`/movies/${movie.id}`)}
     >
       {/* Base Card */}
       <div
@@ -71,7 +85,7 @@ export function MovieCard({ movie, index = 0 }: MovieCardProps) {
         )}
       >
         <img
-          src={movie.image}
+          src={movie.image_url}
           alt={movie.title}
           className="w-full h-full object-cover"
         />
@@ -137,11 +151,11 @@ export function MovieCard({ movie, index = 0 }: MovieCardProps) {
 
           {/* Match & Info */}
           <div className="flex items-center gap-2 text-xs">
-            {movie.match && (
-              <span className="text-green-500 font-semibold">{movie.match}% Match</span>
-            )}
+            {movie.match_score ? (
+              <span className="text-green-500 font-semibold">{movie.match_score}% Match</span>
+            ) : null}
             <span className="text-muted-foreground">{movie.year}</span>
-            <span className="text-muted-foreground">{movie.duration}</span>
+            <span className="text-muted-foreground">{movie.duration_minutes} min</span>
           </div>
 
           {/* Genres */}

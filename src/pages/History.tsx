@@ -2,11 +2,13 @@ import { Clock, Trash2 } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
+import { Progress } from "@/components/ui/progress";
 
 const History = () => {
-  const { watchHistory } = useApp();
+  const { watchHistory, movieStates, clearHistory: clearHistoryApi } = useApp();
 
-  const clearHistory = () => {
+  const clearHistory = async () => {
+    await clearHistoryApi();
     toast({ title: "History cleared" });
   };
 
@@ -35,21 +37,16 @@ const History = () => {
                 style={{ animationDelay: `${index * 50}ms` }}
               >
                 <img
-                  src={movie.image}
+                  src={movie.image_url}
                   alt={movie.title}
                   className="w-32 h-20 object-cover rounded"
                 />
                 <div className="flex-1">
                   <h3 className="font-semibold mb-1">{movie.title}</h3>
                   <p className="text-sm text-muted-foreground mb-2">
-                    {movie.genre.join(" • ")} • {movie.duration}
+                    {movie.genre.join(" • ")} • {movie.duration_minutes} min
                   </p>
-                  <div className="w-full bg-secondary rounded-full h-1">
-                    <div
-                      className="bg-primary h-1 rounded-full"
-                      style={{ width: `${Math.random() * 80 + 20}%` }}
-                    />
-                  </div>
+                  <Progress value={movieStates[movie.id]?.progress_percent ?? 0} />
                 </div>
                 <div className="text-sm text-muted-foreground">
                   {index === 0 ? "Just now" : `${index} day${index > 1 ? "s" : ""} ago`}
