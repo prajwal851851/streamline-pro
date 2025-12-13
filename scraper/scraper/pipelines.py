@@ -46,7 +46,7 @@ class DjangoWriterPipeline:
         # Only accept actual video hosting services
         valid_video_hosts = [
             "vidoza", "streamtape", "mixdrop", "dood", "filemoon", 
-            "upstream", "streamlare", "streamhub", "streamwish"
+            "upstream", "streamlare", "streamhub", "streamwish", "videostr"
         ]
         
         valid_links = []

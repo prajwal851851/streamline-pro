@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Play, Link2 } from "lucide-react";
+import { Play, Link2, AlertCircle, RefreshCw, ExternalLink } from "lucide-react";
 import { fetchStreamingMovie } from "@/api/movies";
 import { StreamingLink, StreamingMovie } from "@/types/api";
 import { Button } from "@/components/ui/button";
@@ -18,10 +18,34 @@ const StreamingDetail = () => {
   });
 
   const [selectedLink, setSelectedLink] = useState<StreamingLink | null>(null);
+  const [iframeError, setIframeError] = useState(false);
+  const [isLoadingVideo, setIsLoadingVideo] = useState(true);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const links = useMemo(() => movie?.links || [], [movie]);
 
   const activeLink = selectedLink || links[0] || null;
+
+  // Reset error state when link changes
+  useEffect(() => {
+    setIframeError(false);
+    setIsLoadingVideo(true);
+  }, [activeLink?.id]);
+
+  // Set loading timeout - if iframe doesn't load in 15 seconds, show error
+  useEffect(() => {
+    if (!activeLink || iframeError) return;
+    
+    const timeout = setTimeout(() => {
+      if (isLoadingVideo) {
+        setIframeError(true);
+        setIsLoadingVideo(false);
+      }
+    }, 15000);
+
+    return () => clearTimeout(timeout);
+  }, [activeLink, iframeError, isLoadingVideo]);
 
   if (isLoading) return <div className="p-6">Loading...</div>;
   if (isError || !movie) return <div className="p-6 text-destructive">Could not load streaming item.</div>;
@@ -69,25 +93,102 @@ const StreamingDetail = () => {
                   } else if (isDirectVideo) {
                     // Direct video file - use video tag
                     return (
-                      <video
-                        key={activeLink.id}
-                        controls
-                        className="w-full h-full bg-black"
-                        poster={movie.poster_url || undefined}
-                        src={url}
-                      />
+                      <div className="relative w-full h-full">
+                        {isLoadingVideo && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+                            <div className="text-center space-y-2">
+                              <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div>
+                              <p className="text-sm text-muted-foreground">Loading video...</p>
+                            </div>
+                          </div>
+                        )}
+                        <video
+                          ref={videoRef}
+                          key={activeLink.id}
+                          controls
+                          className="w-full h-full bg-black"
+                          poster={movie.poster_url || undefined}
+                          src={url}
+                          onLoadedData={() => setIsLoadingVideo(false)}
+                          onError={() => {
+                            setIsLoadingVideo(false);
+                            setIframeError(true);
+                          }}
+                        />
+                      </div>
                     );
                   } else if (isIframeEmbed) {
                     // Embeddable iframe (from other video hosts)
+                    if (iframeError) {
+                      return (
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-4 p-8 bg-background/20">
+                          <AlertCircle className="w-12 h-12 text-destructive" />
+                          <div className="text-center space-y-2">
+                            <p className="text-lg text-white font-semibold">Video Not Available</p>
+                            <p className="text-sm text-muted-foreground">
+                              This video link may have expired or been removed.
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-2">
+                              Try another link from the list, or click below to open the source URL.
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setIframeError(false);
+                                setIsLoadingVideo(true);
+                                if (iframeRef.current) {
+                                  iframeRef.current.src = iframeRef.current.src; // Reload
+                                }
+                              }}
+                              className="gap-2"
+                            >
+                              <RefreshCw className="w-4 h-4" />
+                              Retry
+                            </Button>
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors inline-flex items-center gap-2 text-sm"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                              Open Source
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    }
                     return (
-                      <iframe
-                        key={activeLink.id}
-                        src={url}
-                        className="w-full h-full bg-black"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                        title={movie.title}
-                      />
+                      <div className="relative w-full h-full">
+                        {isLoadingVideo && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+                            <div className="text-center space-y-2">
+                              <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div>
+                              <p className="text-sm text-muted-foreground">Loading video...</p>
+                            </div>
+                          </div>
+                        )}
+                        <iframe
+                          ref={iframeRef}
+                          key={activeLink.id}
+                          src={url}
+                          className="w-full h-full bg-black"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                          title={movie.title}
+                          onLoad={() => {
+                            setIsLoadingVideo(false);
+                            setIframeError(false);
+                          }}
+                          onError={() => {
+                            setIsLoadingVideo(false);
+                            setIframeError(true);
+                          }}
+                        />
+                      </div>
                     );
                   } else {
                     // Unknown URL type - offer to open in new tab
