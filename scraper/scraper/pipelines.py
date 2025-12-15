@@ -1,9 +1,8 @@
 # File: scraper/scraper/pipelines.py
-# REPLACE the entire file with this
+# REPLACE the entire file with this version
 
 from datetime import datetime
 from typing import Any, Dict, List
-import requests
 import logging
 from twisted.internet.threads import deferToThread
 from django.utils import timezone
@@ -13,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 class DjangoWriterPipeline:
     """
-    Persist scraped movie data into the Django database using the streaming app models.
-    Run DB work in a thread to avoid async-ORM issues with Playwright reactor.
+    Persist scraped movie data into the Django database.
+    LESS RESTRICTIVE VERSION - Accepts more video URLs
     """
 
     def process_item(self, item: Dict[str, Any], spider):
@@ -25,7 +24,7 @@ class DjangoWriterPipeline:
 
         imdb_id = item.get("imdb_id")
         if not imdb_id:
-            raise ValueError("imdb_id is required on each item")
+            raise ValueError("imdb_id is required")
 
         defaults = {
             "title": item.get("title") or "",
@@ -40,24 +39,33 @@ class DjangoWriterPipeline:
         links: List[Dict[str, Any]] = item.get("links") or []
         now = timezone.now()
         
-        # Known good video hosting services (expanded list)
+        # CRITICAL: Very permissive video host list
         VALID_VIDEO_HOSTS = [
+            # Common video hosts
             "vidoza", "streamtape", "mixdrop", "dood", "filemoon",
             "upstream", "streamlare", "streamhub", "streamwish", "videostr",
             "voe", "streamvid", "mp4upload", "streamplay", "supervideo",
-            "gounlimited", "jetload", "vidcloud", "mystream", "vidstream"
+            "gounlimited", "jetload", "vidcloud", "mystream", "vidstream",
+            # Additional hosts that might be used
+            "fembed", "streamango", "openload", "rapidvideo", "vidlox",
+            "clipwatching", "verystream", "streammango", "netu", "vidoza",
+            "fastplay", "vidlox", "powvideo", "aparat", "vup", "vshare",
+            # Even more hosts
+            "tune", "woof", "waaw", "hqq", "netu", "thevideo", "vidup",
+            "streamz", "vidfast", "vidoo", "vidbam", "vidbull", "vidto",
         ]
         
-        # Bad patterns to reject
+        # CRITICAL: Minimal bad patterns - only block obvious non-video URLs
         BAD_PATTERNS = [
-            "recaptcha", "google.com/recaptcha", "gstatic.com",
-            "javascript:", "ads", "advertising", "analytics",
-            "youtube.com", "youtu.be",  # YouTube is just trailers
-            "1flix.to",  # Don't save the source site URLs
-            "facebook.com", "twitter.com", "instagram.com"
+            "recaptcha", "google.com/recaptcha",
+            "javascript:", 
+            "1flix.to/movie/", "1flix.to/tv/",  # Don't save the listing page URLs
+            "facebook.com", "twitter.com", "instagram.com",
         ]
         
         valid_links = []
+        rejected_count = 0
+        
         for link in links:
             source_url = link.get("source_url")
             if not source_url or not isinstance(source_url, str):
@@ -67,52 +75,68 @@ class DjangoWriterPipeline:
             
             # Skip invalid URLs
             if not url_lower.startswith(("http://", "https://")):
+                rejected_count += 1
+                logger.debug(f"❌ Rejected (no http): {source_url[:60]}")
                 continue
             
-            # Skip bad patterns
-            if any(bad in url_lower for bad in BAD_PATTERNS):
-                logger.debug(f"Rejected (bad pattern): {source_url[:80]}")
+            # Skip bad patterns (very minimal list)
+            is_bad = False
+            for bad in BAD_PATTERNS:
+                if bad in url_lower:
+                    is_bad = True
+                    rejected_count += 1
+                    logger.debug(f"❌ Rejected (bad pattern '{bad}'): {source_url[:60]}")
+                    break
+            
+            if is_bad:
                 continue
             
-            # Must be from a valid video host OR be a direct video file
+            # Check if it's from a known video host OR looks like a video URL
             is_video_host = any(host in url_lower for host in VALID_VIDEO_HOSTS)
-            is_direct_video = any(ext in url_lower for ext in [".mp4", ".m3u8", ".webm", ".mkv"])
+            is_direct_video = any(ext in url_lower for ext in [".mp4", ".m3u8", ".webm", ".mkv", ".avi"])
+            looks_like_embed = any(word in url_lower for word in ["embed", "player", "watch", "video", "stream"])
             
-            if not (is_video_host or is_direct_video):
-                logger.debug(f"Rejected (not video host): {source_url[:80]}")
-                continue
-            
-            # This link passed all filters!
-            valid_links.append(link)
-            logger.info(f"✅ Accepted link: {source_url[:80]}")
+            # ACCEPT if ANY of these conditions are true:
+            if is_video_host or is_direct_video or looks_like_embed:
+                valid_links.append(link)
+                logger.info(f"✅ ACCEPTED: {source_url[:80]}")
+            else:
+                rejected_count += 1
+                logger.debug(f"❌ Rejected (not video-like): {source_url[:60]}")
         
-        # Save movie even if no links (will be available for retry)
+        # Log results
         if not valid_links:
-            logger.warning(f"⚠️  No valid links found for {movie.title} - saved movie without links")
+            logger.warning(
+                f"⚠️ No valid links for {movie.title} - "
+                f"Found {len(links)} total, rejected {rejected_count}"
+            )
+            # Print first few URLs for debugging
+            if links:
+                logger.info(f"📋 Sample URLs found:")
+                for i, link in enumerate(links[:3]):
+                    url = link.get("source_url", "")
+                    logger.info(f"   {i+1}. {url[:100]}")
         else:
-            logger.info(f"✅ Saving {len(valid_links)} links for {movie.title}")
+            logger.info(f"✅ Accepted {len(valid_links)}/{len(links)} links for {movie.title}")
         
         # Save links
         saved_count = 0
         for link in valid_links:
             source_url = link.get("source_url")
             
-            # Check if link already exists (avoid duplicates)
+            # Check if link already exists
             existing = StreamingLink.objects.filter(
                 movie=movie,
                 source_url=source_url
             ).first()
             
             if existing:
-                # Update existing link
                 existing.quality = link.get("quality") or "HD"
                 existing.language = link.get("language") or "EN"
                 existing.is_active = True
                 existing.last_checked = now
                 existing.save()
-                logger.debug(f"Updated existing link: {source_url[:80]}")
             else:
-                # Create new link
                 StreamingLink.objects.create(
                     movie=movie,
                     source_url=source_url,
@@ -122,7 +146,9 @@ class DjangoWriterPipeline:
                     last_checked=now,
                 )
                 saved_count += 1
-                logger.debug(f"Created new link: {source_url[:80]}")
 
-        logger.info(f"💾 Saved movie: {movie.title} (created={created}, new_links={saved_count})")
+        logger.info(
+            f"💾 Saved {movie.title}: "
+            f"created={created}, new_links={saved_count}, total_links={len(valid_links)}"
+        )
         return item

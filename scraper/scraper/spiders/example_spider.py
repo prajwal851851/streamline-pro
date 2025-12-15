@@ -1,3 +1,6 @@
+# File: scraper/scraper/spiders/example_spider.py
+# REPLACE the entire file
+
 import re
 import scrapy
 from scrapy import Request
@@ -16,19 +19,12 @@ logger = logging.getLogger(__name__)
 
 class OneFlixSpider(scrapy.Spider):
     """
-    Improved Playwright-enabled spider for 1flix.to with on-demand scraping.
+    Improved spider with more aggressive URL extraction
     """
 
     name = "oneflix"
     allowed_domains = ["1flix.to"]
     start_urls = ["https://1flix.to/home"]
-    
-    # Known working video hosting domains
-    VALID_VIDEO_HOSTS = [
-        "vidoza.net", "streamtape.com", "mixdrop.co", "doodstream.com",
-        "filemoon.sx", "upstream.to", "streamlare.com", "streamhub.to",
-        "streamwish.to", "videostr.me", "voe.sx", "streamvid.net"
-    ]
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -43,13 +39,12 @@ class OneFlixSpider(scrapy.Spider):
             logger.info(f"🎯 ON-DEMAND MODE: Scraping {self.target_url}")
 
     def start_requests(self):
-        """Start scraping with proper headers and Playwright configuration."""
+        """Start scraping with proper headers"""
         ua = UserAgent().random if UserAgent else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         headers = {"User-Agent": ua}
         
         for url in self.start_urls:
             if self.on_demand_mode:
-                # For on-demand, go directly to the movie page
                 yield Request(
                     url,
                     headers=headers,
@@ -58,7 +53,6 @@ class OneFlixSpider(scrapy.Spider):
                     dont_filter=True
                 )
             else:
-                # For regular scraping, parse listing first
                 yield Request(
                     url,
                     headers=headers,
@@ -67,7 +61,7 @@ class OneFlixSpider(scrapy.Spider):
                 )
 
     def _get_playwright_meta(self, is_detail_page=False):
-        """Get Playwright configuration based on page type."""
+        """Get Playwright configuration"""
         base_meta = {
             "playwright": True,
             "playwright_page_goto_kwargs": {
@@ -77,12 +71,8 @@ class OneFlixSpider(scrapy.Spider):
         }
         
         if is_detail_page:
-            # For movie detail pages, click server buttons and wait for video players
             base_meta["playwright_page_coroutines"] = [
-                # Wait for page to stabilize
                 {"coroutine": "wait_for_timeout", "args": [3000]},
-                
-                # Scroll to load lazy content
                 {
                     "coroutine": "evaluate",
                     "args": ["""
@@ -93,8 +83,6 @@ class OneFlixSpider(scrapy.Spider):
                     """]
                 },
                 {"coroutine": "wait_for_timeout", "args": [2000]},
-                
-                # Click ALL server buttons to reveal video players
                 {
                     "coroutine": "evaluate",
                     "args": ["""
@@ -104,7 +92,8 @@ class OneFlixSpider(scrapy.Spider):
                                 'a[data-server]', 'button[data-server]',
                                 '.server-item', '.server-btn',
                                 '[class*="server"]', '[id*="server"]',
-                                'button[onclick]', 'a[onclick]'
+                                'button[onclick]', 'a[onclick]',
+                                '.btn', 'button', 'a[href*="embed"]'
                             ];
                             
                             let clicked = 0;
@@ -116,23 +105,16 @@ class OneFlixSpider(scrapy.Spider):
                                             el.scrollIntoView({behavior: 'auto', block: 'center'});
                                             el.click();
                                             clicked++;
-                                        } catch(e) {
-                                            console.warn('Click failed:', e);
-                                        }
+                                        } catch(e) {}
                                     }
                                 });
                             });
                             
-                            console.log('Clicked ' + clicked + ' server buttons');
                             return clicked;
                         }
                     """]
                 },
-                
-                # Wait longer for video players to load
                 {"coroutine": "wait_for_timeout", "args": [10000]},
-                
-                # Scroll again to trigger more lazy loading
                 {
                     "coroutine": "evaluate",
                     "args": ["""
@@ -148,13 +130,12 @@ class OneFlixSpider(scrapy.Spider):
         return base_meta
 
     def parse_listing(self, response):
-        """Parse listing page (only used in regular mode)."""
+        """Parse listing page"""
         if self.on_demand_mode:
             return
         
         logger.info(f"📋 Parsing listing: {response.url}")
         
-        # Extract movie links
         movie_links = set()
         movie_links.update(response.css("a[href*='/movie/']::attr(href)").getall())
         movie_links.update(response.css("a[href*='/tv/']::attr(href)").getall())
@@ -170,7 +151,7 @@ class OneFlixSpider(scrapy.Spider):
                 )
 
     def parse_movie_page(self, response: TextResponse):
-        """Parse movie detail page and extract streaming links."""
+        """Parse movie detail page"""
         logger.info(f"🎬 Parsing movie: {response.url}")
         
         item = StreamingItem()
@@ -220,11 +201,11 @@ class OneFlixSpider(scrapy.Spider):
         )
         item["synopsis"] = synopsis.strip()
         
-        # Extract streaming links using Playwright page
+        # Extract streaming links
         links = self._extract_streaming_links(response)
         
         if not links:
-            logger.warning(f"⚠️  No valid streaming links found for {title}")
+            logger.warning(f"⚠️ No streaming links found for {title}")
         else:
             logger.info(f"✅ Found {len(links)} streaming links for {title}")
         
@@ -233,21 +214,21 @@ class OneFlixSpider(scrapy.Spider):
         yield item
 
     def _extract_streaming_links(self, response: TextResponse):
-        """Extract and validate streaming links from the page."""
+        """AGGRESSIVE URL extraction - gets ALL potential video URLs"""
         page = response.meta.get("playwright_page")
         all_urls = set()
         
-        # Method 1: Extract from Playwright page evaluation
+        # Method 1: Playwright page evaluation
         if page:
             try:
                 extracted_urls = page.evaluate("""
                     () => {
                         const sources = new Set();
                         
-                        // Extract from iframes
+                        // Extract from iframes - VERY IMPORTANT
                         document.querySelectorAll('iframe').forEach(iframe => {
                             const src = iframe.src || iframe.getAttribute('data-src') || 
-                                       iframe.getAttribute('data-url') || '';
+                                       iframe.getAttribute('data-url') || iframe.getAttribute('data-lazy');
                             if (src && src.startsWith('http')) {
                                 sources.add(src);
                             }
@@ -255,7 +236,7 @@ class OneFlixSpider(scrapy.Spider):
                         
                         // Extract from data attributes
                         const dataAttrs = ['data-link', 'data-server', 'data-embed', 
-                                          'data-player', 'data-url', 'data-video'];
+                                          'data-player', 'data-url', 'data-video', 'data-src'];
                         dataAttrs.forEach(attr => {
                             document.querySelectorAll(`[${attr}]`).forEach(el => {
                                 const link = el.getAttribute(attr);
@@ -263,6 +244,15 @@ class OneFlixSpider(scrapy.Spider):
                                     sources.add(link);
                                 }
                             });
+                        });
+                        
+                        // Extract from links
+                        document.querySelectorAll('a[href]').forEach(a => {
+                            const href = a.href;
+                            if (href && (href.includes('embed') || href.includes('player') || 
+                                href.includes('watch') || href.includes('stream'))) {
+                                sources.add(href);
+                            }
                         });
                         
                         // Extract from onclick handlers
@@ -274,14 +264,19 @@ class OneFlixSpider(scrapy.Spider):
                             }
                         });
                         
-                        // Extract from script tags
+                        // Extract from ALL script tags - VERY AGGRESSIVE
                         document.querySelectorAll('script').forEach(script => {
                             const text = script.textContent || '';
-                            const urlPattern = /['"](https?:\\/\\/[^'"]*(?:vidoza|streamtape|mixdrop|dood|filemoon|upstream|streamlare|streamhub|streamwish|videostr|voe|streamvid)[^'"]*)['"]/gi;
+                            // Find all HTTP URLs in the script
+                            const urlPattern = /(https?:\\/\\/[^\\s"'<>]+)/gi;
                             const matches = text.matchAll(urlPattern);
                             for (const match of matches) {
-                                if (match[1]) {
-                                    sources.add(match[1]);
+                                const url = match[1];
+                                // Only add if it looks like a video URL
+                                if (url.includes('embed') || url.includes('player') || 
+                                    url.includes('stream') || url.includes('video') ||
+                                    url.includes('.m3u8') || url.includes('.mp4')) {
+                                    sources.add(url);
                                 }
                             }
                         });
@@ -293,25 +288,26 @@ class OneFlixSpider(scrapy.Spider):
                 if extracted_urls:
                     all_urls.update(extracted_urls)
                     logger.info(f"🔍 Playwright found {len(extracted_urls)} URLs")
+                    for url in extracted_urls[:5]:  # Log first 5
+                        logger.info(f"   - {url[:100]}")
                     
             except Exception as e:
-                logger.warning(f"⚠️  Playwright extraction failed: {e}")
+                logger.warning(f"⚠️ Playwright extraction failed: {e}")
         
-        # Method 2: Extract from static HTML
+        # Method 2: Static HTML extraction
         static_urls = self._extract_from_static_html(response)
         all_urls.update(static_urls)
         logger.info(f"🔍 Static HTML found {len(static_urls)} URLs")
         
-        # Filter and validate URLs
+        # Convert to link format
         valid_links = []
         for url in all_urls:
-            if self._is_valid_video_url(url):
-                valid_links.append({
-                    "quality": self._detect_quality(url),
-                    "language": "EN",
-                    "source_url": url,
-                    "is_active": True,
-                })
+            valid_links.append({
+                "quality": self._detect_quality(url),
+                "language": "EN",
+                "source_url": url,
+                "is_active": True,
+            })
         
         # Remove duplicates
         seen = set()
@@ -325,7 +321,7 @@ class OneFlixSpider(scrapy.Spider):
         return unique_links
 
     def _extract_from_static_html(self, response: TextResponse):
-        """Extract URLs from static HTML."""
+        """Extract ALL possible URLs from static HTML"""
         urls = set()
         
         # Extract from various sources
@@ -333,67 +329,33 @@ class OneFlixSpider(scrapy.Spider):
             "iframe::attr(src)",
             "iframe::attr(data-src)",
             "iframe::attr(data-url)",
+            "iframe::attr(data-lazy)",
             "[data-link]::attr(data-link)",
             "[data-server]::attr(data-server)",
             "[data-embed]::attr(data-embed)",
             "[data-player]::attr(data-player)",
+            "a[href*='embed']::attr(href)",
+            "a[href*='player']::attr(href)",
         ]
         
         for selector in selectors:
             urls.update(response.css(selector).getall())
         
-        # Extract from script tags
+        # Extract from ALL script tags - very aggressive
         scripts = response.css("script::text").getall()
         for script in scripts:
-            # Look for video hosting URLs in JavaScript
-            pattern = r'["\']((https?://[^"\']*(?:' + '|'.join([
-                host.replace('.', r'\.') for host in self.VALID_VIDEO_HOSTS
-            ]) + r')[^"\']*))["\']'
+            # Find ALL HTTP URLs
+            pattern = r'(https?://[^\s"\'<>]+)'
             matches = re.findall(pattern, script, re.IGNORECASE)
-            for match in matches:
-                if isinstance(match, tuple):
-                    urls.add(match[0])
-                else:
-                    urls.add(match)
+            for url in matches:
+                # Only add if it looks video-related
+                if any(word in url.lower() for word in ['embed', 'player', 'stream', 'video', 'watch', '.m3u8', '.mp4']):
+                    urls.add(url)
         
         return urls
 
-    def _is_valid_video_url(self, url: str) -> bool:
-        """Check if URL is a valid video hosting URL."""
-        if not url or not isinstance(url, str):
-            return False
-        
-        url = url.strip()
-        
-        # Must be HTTP/HTTPS
-        if not url.startswith(('http://', 'https://')):
-            return False
-        
-        # Must not be empty or placeholder
-        if url in ['javascript:;', 'javascript:void(0)', '#']:
-            return False
-        
-        url_lower = url.lower()
-        
-        # Block bad patterns
-        bad_patterns = [
-            'recaptcha', 'google.com', 'gstatic.com', 'youtube.com', 'youtu.be',
-            '1flix.to', 'ads', 'advertising', 'analytics', 'facebook.com',
-            'twitter.com', 'instagram.com', 'sharethis'
-        ]
-        
-        if any(bad in url_lower for bad in bad_patterns):
-            return False
-        
-        # Must be from a known video hosting service
-        if not any(host in url_lower for host in self.VALID_VIDEO_HOSTS):
-            return False
-        
-        logger.debug(f"✅ Valid URL: {url[:80]}...")
-        return True
-
     def _detect_quality(self, url: str) -> str:
-        """Detect video quality from URL."""
+        """Detect video quality from URL"""
         url_lower = url.lower()
         
         if '4k' in url_lower or '2160' in url_lower:
