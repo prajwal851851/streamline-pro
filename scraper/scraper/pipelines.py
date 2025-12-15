@@ -1,5 +1,5 @@
 # File: scraper/scraper/pipelines.py
-# REPLACE the entire file with this version
+# REPLACE the entire file
 
 from datetime import datetime
 from typing import Any, Dict, List
@@ -12,8 +12,7 @@ logger = logging.getLogger(__name__)
 
 class DjangoWriterPipeline:
     """
-    Persist scraped movie data into the Django database.
-    LESS RESTRICTIVE VERSION - Accepts more video URLs
+    Persist scraped movie data with STRICT filtering to reject YouTube and social media
     """
 
     def process_item(self, item: Dict[str, Any], spider):
@@ -39,32 +38,52 @@ class DjangoWriterPipeline:
         links: List[Dict[str, Any]] = item.get("links") or []
         now = timezone.now()
         
-        # CRITICAL: Very permissive video host list
+        # CRITICAL: Known video hosting domains
         VALID_VIDEO_HOSTS = [
-            # Common video hosts
             "vidoza", "streamtape", "mixdrop", "dood", "filemoon",
             "upstream", "streamlare", "streamhub", "streamwish", "videostr",
             "voe", "streamvid", "mp4upload", "streamplay", "supervideo",
             "gounlimited", "jetload", "vidcloud", "mystream", "vidstream",
-            # Additional hosts that might be used
             "fembed", "streamango", "openload", "rapidvideo", "vidlox",
-            "clipwatching", "verystream", "streammango", "netu", "vidoza",
-            "fastplay", "vidlox", "powvideo", "aparat", "vup", "vshare",
-            # Even more hosts
-            "tune", "woof", "waaw", "hqq", "netu", "thevideo", "vidup",
+            "clipwatching", "verystream", "streammango", "netu",
+            "fastplay", "powvideo", "aparat", "vup", "vshare",
+            "tune", "woof", "waaw", "hqq", "thevideo", "vidup",
             "streamz", "vidfast", "vidoo", "vidbam", "vidbull", "vidto",
         ]
         
-        # CRITICAL: Minimal bad patterns - only block obvious non-video URLs
+        # CRITICAL: Patterns to REJECT (YouTube, social media, etc.)
         BAD_PATTERNS = [
-            "recaptcha", "google.com/recaptcha",
-            "javascript:", 
+            # Social media & video platforms (NOT streaming hosts)
+            "youtube.com", "youtu.be", "youtube-nocookie.com",
+            "facebook.com", "fb.com",
+            "twitter.com", "x.com",
+            "instagram.com",
+            "tiktok.com",
+            "dailymotion.com",
+            "vimeo.com",
+            
+            # Movie info sites (not streaming)
+            "imdb.com",
+            "themoviedb.org",
+            "tvdb.com",
+            "rottentomatoes.com",
+            
+            # Other
+            "google.com", "recaptcha",
             "1flix.to/movie/", "1flix.to/tv/",  # Don't save the listing page URLs
-            "facebook.com", "twitter.com", "instagram.com",
+            "javascript:", 
+            "#",
+        ]
+        
+        # CRITICAL: Keywords that indicate streaming
+        STREAMING_KEYWORDS = [
+            "embed", "player", "watch", "stream", "video",
+            ".m3u8", ".mp4", ".webm", ".mkv"
         ]
         
         valid_links = []
         rejected_count = 0
+        rejected_youtube = 0
         
         for link in links:
             source_url = link.get("source_url")
@@ -79,25 +98,28 @@ class DjangoWriterPipeline:
                 logger.debug(f"❌ Rejected (no http): {source_url[:60]}")
                 continue
             
-            # Skip bad patterns (very minimal list)
+            # CRITICAL: Reject YouTube and social media
             is_bad = False
             for bad in BAD_PATTERNS:
                 if bad in url_lower:
                     is_bad = True
                     rejected_count += 1
-                    logger.debug(f"❌ Rejected (bad pattern '{bad}'): {source_url[:60]}")
+                    if "youtube" in bad or "youtu.be" in bad:
+                        rejected_youtube += 1
+                        logger.info(f"❌ Rejected YOUTUBE: {source_url[:80]}")
+                    else:
+                        logger.debug(f"❌ Rejected (bad pattern '{bad}'): {source_url[:60]}")
                     break
             
             if is_bad:
                 continue
             
-            # Check if it's from a known video host OR looks like a video URL
+            # Check if it's from a known video host OR has streaming keywords
             is_video_host = any(host in url_lower for host in VALID_VIDEO_HOSTS)
-            is_direct_video = any(ext in url_lower for ext in [".mp4", ".m3u8", ".webm", ".mkv", ".avi"])
-            looks_like_embed = any(word in url_lower for word in ["embed", "player", "watch", "video", "stream"])
+            has_streaming_keyword = any(keyword in url_lower for keyword in STREAMING_KEYWORDS)
             
-            # ACCEPT if ANY of these conditions are true:
-            if is_video_host or is_direct_video or looks_like_embed:
+            # ACCEPT if either condition is true
+            if is_video_host or has_streaming_keyword:
                 valid_links.append(link)
                 logger.info(f"✅ ACCEPTED: {source_url[:80]}")
             else:
@@ -107,17 +129,20 @@ class DjangoWriterPipeline:
         # Log results
         if not valid_links:
             logger.warning(
-                f"⚠️ No valid links for {movie.title} - "
-                f"Found {len(links)} total, rejected {rejected_count}"
+                f"⚠️ No valid streaming links for {movie.title} - "
+                f"Found {len(links)} total, rejected {rejected_count} (YouTube: {rejected_youtube})"
             )
             # Print first few URLs for debugging
             if links:
                 logger.info(f"📋 Sample URLs found:")
-                for i, link in enumerate(links[:3]):
+                for i, link in enumerate(links[:5]):
                     url = link.get("source_url", "")
                     logger.info(f"   {i+1}. {url[:100]}")
         else:
-            logger.info(f"✅ Accepted {len(valid_links)}/{len(links)} links for {movie.title}")
+            logger.info(
+                f"✅ Accepted {len(valid_links)}/{len(links)} links for {movie.title} "
+                f"(Rejected YouTube: {rejected_youtube})"
+            )
         
         # Save links
         saved_count = 0
