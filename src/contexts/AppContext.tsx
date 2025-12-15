@@ -16,7 +16,7 @@ interface AppContextType extends AppState {
   setLanguage: (lang: string) => void;
   setSubtitles: (lang: string) => void;
   refreshMovies: () => Promise<void>;
-  addToFavorites: (movieId: number) => Promise<void>;
+  addToFavorites: (movieId: number) => Promise<void>;  // Fixed: Takes movieId, not Movie object
   removeFromFavorites: (movieId: number) => Promise<void>;
   isFavorite: (movieId: number) => boolean;
   addToHistory: (movieId: number) => Promise<void>;

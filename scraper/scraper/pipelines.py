@@ -1,3 +1,6 @@
+# File: scraper/scraper/pipelines.py
+# REPLACE the entire file with this
+
 from datetime import datetime
 from typing import Any, Dict, List
 import requests
@@ -18,7 +21,7 @@ class DjangoWriterPipeline:
         return deferToThread(self._save_item, item)
 
     def _save_item(self, item: Dict[str, Any]):
-        from streaming.models import Movie, StreamingLink  # Imported lazily after Django setup
+        from streaming.models import Movie, StreamingLink
 
         imdb_id = item.get("imdb_id")
         if not imdb_id:
@@ -37,20 +40,21 @@ class DjangoWriterPipeline:
         links: List[Dict[str, Any]] = item.get("links") or []
         now = timezone.now()
         
-        # Final safety filter - never save bad URLs
-        bad_patterns = [
-            "recaptcha", "google.com/recaptcha", "gstatic.com", 
-            "javascript:", "javascript:;", "ads", "advertising", "analytics",
-            "youtube.com", "youtu.be"  # YouTube is just trailers, not actual movies
+        # Known good video hosting services (expanded list)
+        VALID_VIDEO_HOSTS = [
+            "vidoza", "streamtape", "mixdrop", "dood", "filemoon",
+            "upstream", "streamlare", "streamhub", "streamwish", "videostr",
+            "voe", "streamvid", "mp4upload", "streamplay", "supervideo",
+            "gounlimited", "jetload", "vidcloud", "mystream", "vidstream"
         ]
         
-        # Only accept actual video hosting services
-        valid_video_hosts = [
-            "vidoza", "streamtape", "mixdrop", "dood", "filemoon", 
-            "upstream", "streamlare", "streamhub", "streamwish", "videostr",
-            "streamtape.com", "mixdrop.co", "doodstream", "vidoza.net",
-            "filemoon.sx", "upstream.to", "streamlare.com", "streamhub.to",
-            "streamwish.to", "videostr.me"
+        # Bad patterns to reject
+        BAD_PATTERNS = [
+            "recaptcha", "google.com/recaptcha", "gstatic.com",
+            "javascript:", "ads", "advertising", "analytics",
+            "youtube.com", "youtu.be",  # YouTube is just trailers
+            "1flix.to",  # Don't save the source site URLs
+            "facebook.com", "twitter.com", "instagram.com"
         ]
         
         valid_links = []
@@ -61,58 +65,64 @@ class DjangoWriterPipeline:
             
             url_lower = source_url.lower().strip()
             
-            # Reject bad URLs
-            if any(bad in url_lower for bad in bad_patterns):
-                logger.debug(f"Skipping bad URL for {movie.title}: {source_url[:100]}")
+            # Skip invalid URLs
+            if not url_lower.startswith(("http://", "https://")):
                 continue
             
-            # Reject ALL 1flix.to URLs - we only want actual video hosting services
-            if "1flix.to" in url_lower:
-                logger.debug(f"Skipping 1flix.to URL for {movie.title}: {source_url[:100]}")
+            # Skip bad patterns
+            if any(bad in url_lower for bad in BAD_PATTERNS):
+                logger.debug(f"Rejected (bad pattern): {source_url[:80]}")
                 continue
             
-            # Only accept URLs from actual video hosting services (not YouTube trailers)
-            if not any(host in url_lower for host in valid_video_hosts):
-                # Allow direct video file URLs (mp4, m3u8, etc.)
-                if not any(ext in url_lower for ext in [".mp4", ".m3u8", ".webm", ".mkv", ".avi", ".mov", ".flv"]):
-                    logger.debug(f"Skipping non-video-host URL for {movie.title}: {source_url[:100]}")
-                    continue
+            # Must be from a valid video host OR be a direct video file
+            is_video_host = any(host in url_lower for host in VALID_VIDEO_HOSTS)
+            is_direct_video = any(ext in url_lower for ext in [".mp4", ".m3u8", ".webm", ".mkv"])
             
+            if not (is_video_host or is_direct_video):
+                logger.debug(f"Rejected (not video host): {source_url[:80]}")
+                continue
+            
+            # This link passed all filters!
             valid_links.append(link)
-            logger.info(f"Accepted link for {movie.title}: {source_url[:100]}")
+            logger.info(f"✅ Accepted link: {source_url[:80]}")
         
-        # Save movie even if no links (for on-demand scraping later)
-        # But log a warning if no links found
+        # Save movie even if no links (will be available for retry)
         if not valid_links:
-            logger.warning(f"No valid links found for {movie.title} - saving movie without links (will be available for on-demand scraping)")
-            # Don't return early - we still want to save the movie with original_detail_url
-            # The links can be fetched later via on-demand scraping
+            logger.warning(f"⚠️  No valid links found for {movie.title} - saved movie without links")
+        else:
+            logger.info(f"✅ Saving {len(valid_links)} links for {movie.title}")
         
+        # Save links
+        saved_count = 0
         for link in valid_links:
             source_url = link.get("source_url")
-            # Check if link is dead (returns error page)
-            is_active = link.get("is_active", True)
-            if is_active:
-                # Quick check: if URL contains error indicators, mark as inactive
-                url_lower = source_url.lower()
-                dead_indicators = [
-                    "file not found", "404", "not found", "deleted", 
-                    "removed", "copyright", "violation", "sorry"
-                ]
-                # Don't do HTTP check here (too slow), but mark suspicious URLs
-                # The frontend will handle actual link validation
             
-            StreamingLink.objects.update_or_create(
+            # Check if link already exists (avoid duplicates)
+            existing = StreamingLink.objects.filter(
                 movie=movie,
-                source_url=source_url,
-                defaults={
-                    "quality": link.get("quality") or "HD",
-                    "language": link.get("language") or "EN",
-                    "is_active": is_active,
-                    "last_checked": link.get("last_checked") or now,
-                },
-            )
+                source_url=source_url
+            ).first()
+            
+            if existing:
+                # Update existing link
+                existing.quality = link.get("quality") or "HD"
+                existing.language = link.get("language") or "EN"
+                existing.is_active = True
+                existing.last_checked = now
+                existing.save()
+                logger.debug(f"Updated existing link: {source_url[:80]}")
+            else:
+                # Create new link
+                StreamingLink.objects.create(
+                    movie=movie,
+                    source_url=source_url,
+                    quality=link.get("quality") or "HD",
+                    language=link.get("language") or "EN",
+                    is_active=True,
+                    last_checked=now,
+                )
+                saved_count += 1
+                logger.debug(f"Created new link: {source_url[:80]}")
 
-        logger.info("Saved movie %s (created=%s)", movie.title, created)
+        logger.info(f"💾 Saved movie: {movie.title} (created={created}, new_links={saved_count})")
         return item
-

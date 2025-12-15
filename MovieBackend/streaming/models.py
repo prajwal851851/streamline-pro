@@ -2,7 +2,7 @@ from django.db import models
 
 
 class Movie(models.Model):
-    imdb_id = models.CharField(max_length=20, unique=True, help_text="e.g., 'tt0111161'")
+    imdb_id = models.CharField(max_length=20, unique=True, help_text="e.g., 'tt0111161'", db_index=True)
     title = models.CharField(max_length=255)
     year = models.IntegerField(null=True, blank=True)
     TYPE_CHOICES = [

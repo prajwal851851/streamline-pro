@@ -23,6 +23,7 @@ import Categories from "./pages/Categories";
 import Kids from "./pages/Kids";
 import Shuffle from "./pages/Shuffle";
 import Settings from "./pages/Settings";
+import MoviePlayer from "./pages/MoviePlayer";
 import NotFound from "./pages/NotFound";
 import Watch from "./pages/Watch";
 import Login from "./pages/auth/Login";
@@ -57,6 +58,7 @@ const ProtectedApp = () => {
           <Route path="/shuffle" element={<Shuffle />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
+          <Route path="/watch/:id" element={<MoviePlayer />} />
         </Routes>
       </Layout>
     </AppProvider>

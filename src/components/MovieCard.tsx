@@ -47,7 +47,7 @@ export function MovieCard({ movie, index = 0 }: MovieCardProps) {
       removeFromFavorites(movie.id);
       toast({ title: "Removed from Favorites" });
     } else {
-      addToFavorites(movie);
+      addToFavorites(movie.id);  // Fixed: Pass only movie.id, not entire movie object
       toast({ title: "Added to Favorites" });
     }
   };
@@ -75,7 +75,7 @@ export function MovieCard({ movie, index = 0 }: MovieCardProps) {
       style={{ animationDelay: `${index * 50}ms` }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      onClick={() => navigate(`/movies/${movie.id}`)}
+      onClick={() => navigate(`/watch/${movie.id}`)}
     >
       {/* Base Card */}
       <div
@@ -98,8 +98,8 @@ export function MovieCard({ movie, index = 0 }: MovieCardProps) {
           )}
         />
 
-        {/* New Badge */}
-        {movie.isNew && (
+        {/* New Badge - Fixed: Use is_new instead of isNew */}
+        {movie.is_new && (
           <div className="absolute top-2 left-2 px-2 py-0.5 bg-primary text-primary-foreground text-xs font-semibold rounded">
             NEW
           </div>

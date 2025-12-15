@@ -1,13 +1,15 @@
 import os
 import sys
-
+from pathlib import Path
 import django
 
 # Add Django project to sys.path so Scrapy can import settings and models.
-DJANGO_PROJECT_PATH = r"D:\movie_streamming\streamline-pro\MovieBackend"
-sys.path.append(r"D:\movie_streamming\streamline-pro\MovieBackend")
+SCRAPER_DIR = Path(__file__).resolve().parent.parent.parent
+DJANGO_PROJECT_PATH = SCRAPER_DIR / "MovieBackend"
+sys.path.append(str(DJANGO_PROJECT_PATH))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "MovieBackends.settings")
 django.setup()
+
 
 BOT_NAME = "scraper"
 

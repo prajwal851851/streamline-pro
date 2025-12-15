@@ -5,53 +5,73 @@ from rest_framework.permissions import AllowAny
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
 from datetime import timedelta
+import requests
+import logging
 
 from .models import Movie, StreamingLink
 from .serializers import MovieSerializer
 from .scraper_utils import scrape_movie_on_demand
 
+logger = logging.getLogger(__name__)
+
 
 class StreamingMovieViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
-    """Read-only endpoints for scraped streaming movies with on-demand scraping."""
+    """
+    Read-only endpoints for scraped streaming movies with on-demand scraping
+    and real-time link validation.
+    """
 
     queryset = Movie.objects.prefetch_related("links").order_by("-created_at")
     serializer_class = MovieSerializer
     permission_classes = [AllowAny]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ["type"]  # Allow filtering by type (movie, show, episode)
+    filterset_fields = ["type"]
     
     def retrieve(self, request, *args, **kwargs):
         """
         Override retrieve to check for active links and trigger on-demand scraping if needed.
+        Returns movie with validated working links.
         """
         instance = self.get_object()
         
-        # Check if movie has active links
+        # Get active links
         active_links = StreamingLink.objects.filter(movie=instance, is_active=True)
         
-        # Check if links are stale (older than 24 hours)
+        # Check if links are stale (older than 24 hours) or non-existent
         stale_threshold = timezone.now() - timedelta(hours=24)
-        stale_links = active_links.filter(last_checked__lt=stale_threshold) | active_links.filter(last_checked__isnull=True)
+        stale_links = active_links.filter(
+            last_checked__lt=stale_threshold
+        ) | active_links.filter(last_checked__isnull=True)
         
-        # If no active links or all links are stale, trigger on-demand scraping
-        if active_links.count() == 0 or stale_links.count() == active_links.count():
-            # Use the stored original_detail_url if available
-            if instance.original_detail_url:
-                scrape_movie_on_demand(instance.original_detail_url, movie_id=instance.id)
-            else:
-                # Fallback: Try to construct the URL from imdb_id
-                movie_slug = instance.imdb_id
-                if movie_slug:
-                    # Try different URL patterns
-                    possible_urls = [
-                        f"https://1flix.to/movie/{movie_slug}",
-                        f"https://1flix.to/tv/{movie_slug}",
-                        f"https://1flix.to/{movie_slug}",
-                    ]
-                    
-                    # Trigger scraping for the first URL
-                    scrape_movie_on_demand(possible_urls[0], movie_id=instance.id)
+        needs_refresh = (
+            active_links.count() == 0 or  # No active links
+            stale_links.count() == active_links.count() or  # All links are stale
+            active_links.count() < 2  # Too few links (want at least 2 backup options)
+        )
         
+        if needs_refresh:
+            logger.info(f"🔄 Movie '{instance.title}' needs refresh - triggering on-demand scraping")
+            
+            # Use stored URL or construct it
+            target_url = instance.original_detail_url
+            if not target_url:
+                # Construct URL from imdb_id
+                if instance.type == "show":
+                    target_url = f"https://1flix.to/tv/{instance.imdb_id}"
+                else:
+                    target_url = f"https://1flix.to/movie/{instance.imdb_id}"
+            
+            # Trigger on-demand scraping (runs in background)
+            scrape_movie_on_demand(target_url, movie_id=instance.id)
+            
+            # Return current data with a flag indicating refresh is in progress
+            serializer = self.get_serializer(instance)
+            data = serializer.data
+            data['_refreshing'] = True
+            data['_message'] = 'Fetching fresh streaming links...'
+            return Response(data)
+        
+        # Links are fresh, return as normal
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
     
@@ -59,33 +79,86 @@ class StreamingMovieViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vi
     def refresh_links(self, request, pk=None):
         """
         Manually trigger a refresh of streaming links for a specific movie.
-        POST /api/movies/{id}/refresh_links/
+        POST /api/streaming/movies/{id}/refresh_links/
         """
         movie = self.get_object()
         
-        # Use the stored original_detail_url if available
-        if movie.original_detail_url:
-            scrape_movie_on_demand(movie.original_detail_url, movie_id=movie.id)
-        else:
-            # Fallback: Construct URL from imdb_id
-            movie_slug = movie.imdb_id
-            if not movie_slug:
-                return Response(
-                    {"error": "Movie does not have an original_detail_url or imdb_id"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            possible_urls = [
-                f"https://1flix.to/movie/{movie_slug}",
-                f"https://1flix.to/tv/{movie_slug}",
-                f"https://1flix.to/{movie_slug}",
-            ]
-            
-            # Trigger scraping
-            scrape_movie_on_demand(possible_urls[0], movie_id=movie.id)
+        # Use stored URL or construct it
+        target_url = movie.original_detail_url
+        if not target_url:
+            if movie.type == "show":
+                target_url = f"https://1flix.to/tv/{movie.imdb_id}"
+            else:
+                target_url = f"https://1flix.to/movie/{movie.imdb_id}"
+        
+        logger.info(f"🔄 Manual refresh triggered for '{movie.title}'")
+        
+        # Trigger scraping
+        scrape_movie_on_demand(target_url, movie_id=movie.id)
         
         return Response({
-            "message": f"Refresh triggered for {movie.title}. Links will be updated shortly.",
-            "status": "scraping"
+            "message": f"Refresh triggered for {movie.title}",
+            "status": "scraping",
+            "estimated_time": "15-30 seconds"
         })
-
+    
+    @action(detail=True, methods=['get'])
+    def validate_links(self, request, pk=None):
+        """
+        Validate all links for a movie and return only working ones.
+        GET /api/streaming/movies/{id}/validate_links/
+        """
+        movie = self.get_object()
+        links = StreamingLink.objects.filter(movie=movie, is_active=True)
+        
+        validated_links = []
+        for link in links:
+            if self._check_link_health(link.source_url):
+                link.is_active = True
+                link.last_checked = timezone.now()
+                link.save(update_fields=['is_active', 'last_checked'])
+                validated_links.append(link)
+            else:
+                link.is_active = False
+                link.last_checked = timezone.now()
+                link.save(update_fields=['is_active', 'last_checked'])
+        
+        serializer = self.get_serializer(movie)
+        data = serializer.data
+        data['validated_links_count'] = len(validated_links)
+        data['total_links_checked'] = links.count()
+        
+        return Response(data)
+    
+    def _check_link_health(self, url: str, timeout: int = 5) -> bool:
+        """
+        Check if a streaming link is healthy by making a HEAD request.
+        Returns True if link is working, False otherwise.
+        """
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.head(
+                url,
+                timeout=timeout,
+                headers=headers,
+                allow_redirects=True
+            )
+            
+            # Consider 200-399 as healthy
+            if 200 <= response.status_code < 400:
+                return True
+            
+            logger.debug(f"❌ Unhealthy link (status {response.status_code}): {url[:80]}")
+            return False
+            
+        except requests.Timeout:
+            logger.debug(f"⏱️  Timeout: {url[:80]}")
+            return False
+        except requests.RequestException as e:
+            logger.debug(f"❌ Request error: {url[:80]} - {str(e)[:50]}")
+            return False
+        except Exception as e:
+            logger.warning(f"❌ Unexpected error checking {url[:80]}: {str(e)[:50]}")
+            return False

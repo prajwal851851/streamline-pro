@@ -41,3 +41,6 @@ export async function refreshStreamingMovieLinks(id: string | number): Promise<{
   return apiPost<{ message: string; status: string }>(`/streaming/movies/${id}/refresh_links/`, {});
 }
 
+export async function validateStreamingLinks(id: string | number): Promise<StreamingMovie> {
+  return apiGet<StreamingMovie>(`/streaming/movies/${id}/validate_links/`);
+}

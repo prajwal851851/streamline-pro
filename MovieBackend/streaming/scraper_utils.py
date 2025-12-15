@@ -34,19 +34,23 @@ def scrape_movie_on_demand(movie_url, movie_id=None):
             
             # Path to Python executable in venv
             venv_python = project_root / 'venv' / 'Scripts' / 'python.exe'
+
+            python_exe = Path(sys.executable) if sys.executable else venv_python
+            if python_exe and not python_exe.exists():
+                python_exe = venv_python
             
             if not os.path.exists(str(scraper_dir)):
                 logger.error(f"Scraper directory not found at {scraper_dir}")
                 return
             
-            if not os.path.exists(venv_python):
-                logger.error(f"Python executable not found at {venv_python}")
+            if not python_exe or not python_exe.exists():
+                logger.error(f"Python executable not found (sys.executable={sys.executable}, venv={venv_python})")
                 return
             
             # Build Scrapy command
             # We'll modify the spider to accept a specific URL to scrape
             cmd = [
-                venv_python,
+                str(python_exe),
                 '-m', 'scrapy',
                 'crawl',
                 'oneflix',
@@ -58,6 +62,7 @@ def scrape_movie_on_demand(movie_url, movie_id=None):
             ]
             
             logger.info(f"Starting on-demand scrape for: {movie_url}")
+            logger.info(f"Running command: {' '.join(cmd)}")
             
             # Run Scrapy in the scraper directory
             process = subprocess.Popen(
@@ -69,8 +74,9 @@ def scrape_movie_on_demand(movie_url, movie_id=None):
             )
             
             # Wait for completion (with timeout)
+            timeout_seconds = int(os.environ.get("STREAMLINE_SCRAPE_TIMEOUT", "180"))
             try:
-                stdout, stderr = process.communicate(timeout=120)  # 2 minute timeout
+                stdout, stderr = process.communicate(timeout=timeout_seconds)
                 if process.returncode == 0:
                     logger.info(f"Successfully scraped {movie_url}")
                 else:
