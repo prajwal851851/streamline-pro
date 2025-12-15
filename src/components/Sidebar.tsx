@@ -25,7 +25,6 @@ const mainNavItems = [
   { icon: Search, label: "Search", path: "/search" },
   { icon: Home, label: "Home", path: "/" },
   { icon: Film, label: "Movies", path: "/movies" },
-  { icon: PlayCircle, label: "Streaming", path: "/streaming" },
   { icon: Tv, label: "TV Shows", path: "/tv-shows" },
   { icon: Shuffle, label: "Shuffle", path: "/shuffle" },
   { icon: TrendingUp, label: "Trending", path: "/trending" },

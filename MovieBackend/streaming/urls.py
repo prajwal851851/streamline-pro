@@ -6,7 +6,7 @@ from .views import StreamingMovieViewSet
 app_name = "streaming"
 
 router = DefaultRouter()
-router.register(r"streaming/movies", StreamingMovieViewSet, basename="streaming-movie")
+router.register(r"movies", StreamingMovieViewSet, basename="streaming-movie")
 
 urlpatterns = [
     path("", include(router.urls)),

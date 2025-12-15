@@ -5,9 +5,10 @@ from .models import Movie, StreamingLink
 
 @admin.register(Movie)
 class MovieAdmin(admin.ModelAdmin):
-    list_display = ("title", "imdb_id", "year", "type", "created_at")
-    search_fields = ("title", "imdb_id")
+    list_display = ("title", "imdb_id", "year", "type", "original_detail_url", "created_at")
+    search_fields = ("title", "imdb_id", "original_detail_url")
     list_filter = ("type", "year")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(StreamingLink)

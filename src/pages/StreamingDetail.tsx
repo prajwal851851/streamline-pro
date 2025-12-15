@@ -2,7 +2,7 @@ import { useMemo, useState, useRef, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Play, Link2, AlertCircle, RefreshCw, ExternalLink } from "lucide-react";
-import { fetchStreamingMovie } from "@/api/movies";
+import { fetchStreamingMovie, refreshStreamingMovieLinks } from "@/api/movies";
 import { StreamingLink, StreamingMovie } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +11,7 @@ const StreamingDetail = () => {
   const { id } = useParams<{ id: string }>();
   const movieId = Number(id);
 
-  const { data: movie, isLoading, isError } = useQuery<StreamingMovie>({
+  const { data: movie, isLoading, isError, refetch } = useQuery<StreamingMovie>({
     queryKey: ["streaming-movie", movieId],
     queryFn: () => fetchStreamingMovie(movieId),
     enabled: !!movieId,
@@ -20,8 +20,25 @@ const StreamingDetail = () => {
   const [selectedLink, setSelectedLink] = useState<StreamingLink | null>(null);
   const [iframeError, setIframeError] = useState(false);
   const [isLoadingVideo, setIsLoadingVideo] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  
+  const handleRefreshLinks = async () => {
+    if (!movieId || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await refreshStreamingMovieLinks(movieId);
+      // Wait a bit then refetch
+      setTimeout(async () => {
+        await refetch();
+        setIsRefreshing(false);
+      }, 3000);
+    } catch (error) {
+      console.error("Error refreshing links:", error);
+      setIsRefreshing(false);
+    }
+  };
 
   const links = useMemo(() => movie?.links || [], [movie]);
 
@@ -241,6 +258,16 @@ const StreamingDetail = () => {
                   Open Source URL
                 </a>
               )}
+              <Button
+                variant="outline"
+                size="lg"
+                className="gap-2"
+                onClick={handleRefreshLinks}
+                disabled={isRefreshing}
+              >
+                <RefreshCw className={`w-4 h-4 ${isRefreshing ? "animate-spin" : ""}`} />
+                {isRefreshing ? "Refreshing..." : "Refresh Links"}
+              </Button>
             </div>
             <div className="space-y-2">
               <h1 className="text-3xl font-bold">{movie.title}</h1>

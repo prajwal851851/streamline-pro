@@ -13,6 +13,7 @@ class Movie(models.Model):
     type = models.CharField(max_length=10, choices=TYPE_CHOICES, default="movie")
     poster_url = models.URLField(max_length=500, null=True, blank=True)
     synopsis = models.TextField(null=True, blank=True)
+    original_detail_url = models.URLField(max_length=1000, null=True, blank=True, help_text="Original source URL from 1flix.to (e.g., https://1flix.to/watch-movie/...)")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

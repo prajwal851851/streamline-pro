@@ -21,7 +21,7 @@ from django.urls import include, path
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('core.urls', namespace='core')),
-    path('api/', include('streaming.urls', namespace='streaming')),
+    path('api/streaming/', include('streaming.urls', namespace='streaming')),
     path(
         '',
         lambda request: JsonResponse(

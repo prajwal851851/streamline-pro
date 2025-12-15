@@ -11,7 +11,7 @@ class StreamingLinkSerializer(serializers.ModelSerializer):
 
 
 class MovieSerializer(serializers.ModelSerializer):
-    links = StreamingLinkSerializer(many=True, read_only=True)
+    links = serializers.SerializerMethodField()
 
     class Meta:
         model = Movie
@@ -23,9 +23,15 @@ class MovieSerializer(serializers.ModelSerializer):
             "type",
             "poster_url",
             "synopsis",
+            "original_detail_url",
             "created_at",
             "updated_at",
             "links",
         ]
         read_only_fields = ["id", "created_at", "updated_at", "links"]
+    
+    def get_links(self, obj):
+        # Only return active links
+        active_links = obj.links.filter(is_active=True)
+        return StreamingLinkSerializer(active_links, many=True).data
 

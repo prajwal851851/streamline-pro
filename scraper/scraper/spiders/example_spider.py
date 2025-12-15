@@ -1,3 +1,4 @@
+import re
 import scrapy
 from scrapy import Request
 
@@ -29,6 +30,13 @@ class OneFlixSpider(scrapy.Spider):
         self.seen_movies = set()  # Track crawled movies to avoid duplicates
         self.pages_crawled = 0  # Track pagination depth
         self.max_pages = int(kwargs.get('max_pages', 10))  # Limit pagination depth
+        
+        # On-demand scraping: if target_url is provided, only scrape that URL
+        self.target_url = kwargs.get('target_url', None)
+        if self.target_url:
+            self.start_urls = [self.target_url]
+            self.max_pages = 1  # Don't paginate for on-demand scraping
+            self.logger.info(f"On-demand scraping mode: targeting {self.target_url}")
 
     async def start(self):
         """
@@ -60,11 +68,14 @@ class OneFlixSpider(scrapy.Spider):
         movie_detail_links.update(response.css("a[href*='/movie/watch-']::attr(href)").getall())
         movie_detail_links.update(response.css("a[href*='/tv/watch-']::attr(href)").getall())
         
-        new_links = [link for link in movie_detail_links if link and link not in self.seen_movies]
-        self.logger.info(f"Found {len(new_links)} new movie links on {response.url} (total seen: {len(self.seen_movies)})")
+        # Process all links, not just new ones (to update existing movies with new links)
+        new_links = [link for link in movie_detail_links if link]
+        self.logger.info(f"Found {len(new_links)} movie links on {response.url} (processing all to update links)")
         
         for link in new_links:
-            self.seen_movies.add(link)
+            # Track but don't skip - allow re-processing
+            if link not in self.seen_movies:
+                self.seen_movies.add(link)
             yield response.follow(
                 link,
                 callback=self.parse_movie_page,
@@ -78,7 +89,21 @@ class OneFlixSpider(scrapy.Spider):
                     "playwright_page_coroutines": [
                         {
                             "coroutine": "wait_for_timeout",
-                            "args": [3000]  # Wait 3 seconds after networkidle for page to stabilize
+                            "args": [5000]  # Wait 5 seconds after networkidle for page to stabilize
+                        },
+                        {
+                            "coroutine": "evaluate",
+                            "args": ["""
+                                () => {
+                                    // Scroll to bottom to ensure all elements are loaded
+                                    window.scrollTo(0, document.body.scrollHeight);
+                                    return true;
+                                }
+                            """]
+                        },
+                        {
+                            "coroutine": "wait_for_timeout",
+                            "args": [2000]  # Wait after scrolling
                         },
                         {
                             "coroutine": "evaluate",
@@ -90,21 +115,24 @@ class OneFlixSpider(scrapy.Spider):
                                         'a[data-server]', 'button[data-server]',
                                         '.server-item a', '.server-btn',
                                         '[class*="server"] a', '[class*="server"] button',
-                                        '[data-id]', '.btn-server', '.server-btn'
+                                        '[data-id]', '.btn-server', '.server-btn',
+                                        '[onclick*="server"]', '[onclick*="load"]',
+                                        '.episode-server-item', '.server-list a',
+                                        'button[onclick]', 'a[onclick]'
                                     ];
                                     
                                     let clicked = 0;
                                     selectors.forEach(selector => {
-                                        const elements = document.querySelectorAll(selector);
+                                        const elements = Array.from(document.querySelectorAll(selector));
                                         elements.forEach((el, index) => {
-                                            if (clicked < 10 && el.offsetParent !== null) { // Only visible elements
+                                            if (clicked < 20 && el.offsetParent !== null) { // Increased to 20, only visible elements
                                                 try { 
-                                                    el.scrollIntoView({behavior: 'smooth', block: 'center'});
-                                                    setTimeout(() => {
-                                                        el.click();
-                                                    }, index * 200);
+                                                    el.scrollIntoView({behavior: 'auto', block: 'center'});
+                                                    el.click();
                                                     clicked++;
-                                                } catch(e) {}
+                                                } catch(e) {
+                                                    console.warn('Error clicking:', e);
+                                                }
                                             }
                                         });
                                     });
@@ -114,7 +142,21 @@ class OneFlixSpider(scrapy.Spider):
                         },
                         {
                             "coroutine": "wait_for_timeout",
-                            "args": [5000]  # Wait 5 seconds for video players to load after clicking
+                            "args": [8000]  # Increased to 8 seconds for video players to load after clicking
+                        },
+                        {
+                            "coroutine": "evaluate",
+                            "args": ["""
+                                () => {
+                                    // Scroll again to trigger lazy loading
+                                    window.scrollTo(0, document.body.scrollHeight);
+                                    return true;
+                                }
+                            """]
+                        },
+                        {
+                            "coroutine": "wait_for_timeout",
+                            "args": [3000]  # Final wait
                         }
                     ],
                 },
@@ -149,14 +191,18 @@ class OneFlixSpider(scrapy.Spider):
         Parse an individual movie detail page and collect streaming links.
         Many elements are dynamically injected; we rely on rendered HTML and multiple fallbacks.
         """
-        # Skip if already processed
+        # Skip if already processed (but allow re-processing for link updates)
         movie_slug = response.url.rstrip("/").split("/")[-1]
-        if movie_slug in self.seen_movies:
-            return
+        # Don't skip - allow re-processing to update links
+        # if movie_slug in self.seen_movies:
+        #     return
         
         self.logger.info(f"Parsing movie page: {response.url}")
         
         item = StreamingItem()
+
+        # Store the original detail URL for on-demand scraping
+        item["original_detail_url"] = response.url
 
         # Title fallback: first h1
         title = (response.css("h1::text").get() or "").strip()
@@ -174,8 +220,14 @@ class OneFlixSpider(scrapy.Spider):
                 break
         item["year"] = year
 
-        # Type is always movie on this site
-        item["type"] = "movie"
+        # Determine type from URL - check more patterns
+        url_lower = response.url.lower()
+        if "/tv/" in url_lower or "/tv-show/" in url_lower or "/series/" in url_lower or "/show/" in url_lower:
+            item["type"] = "show"
+            self.logger.info(f"Detected TV Show: {title}")
+        else:
+            item["type"] = "movie"
+            self.logger.info(f"Detected Movie: {title}")
 
         # Poster from og:image or first image
         poster = response.css("meta[property='og:image']::attr(content)").get()
@@ -187,18 +239,161 @@ class OneFlixSpider(scrapy.Spider):
         synopsis = response.css("meta[name='description']::attr(content)").get()
         if not synopsis:
             synopsis = response.css("p::text").get()
-        item["synopsis"] = synopsis
-
-        # Extract iframe sources from the detail page
-        # Server buttons should already be clicked by page coroutines
-        detail_page_links = []
+        item["synopsis"] = synopsis or ""
         
-        # Extract from rendered HTML (after server buttons were clicked by coroutines)
+        # Filter out unwanted content - check title and synopsis
+        title_lower = title.lower()
+        synopsis_lower = (synopsis or "").lower()
+        combined_text = f"{title_lower} {synopsis_lower}"
+        
+        # Skip unwanted content types - be less aggressive, only filter obvious non-content
+        skip_keywords = [
+            # Only filter obvious non-movie/TV content
+            "podcast", "audio book", "audiobook",
+            # Only filter if title starts with these (not if they appear anywhere)
+            # "news", "sports" - removed, too aggressive
+        ]
+        
+        # Check if title starts with skip keywords (less aggressive)
+        should_skip = False
+        title_lower_stripped = title_lower.strip()
+        for keyword in skip_keywords:
+            if title_lower_stripped.startswith(keyword) or f" {keyword} " in f" {title_lower_stripped} ":
+                self.logger.info(f"Skipping {title}: starts with '{keyword}'")
+                should_skip = True
+                break
+        
+        # Additional check: Skip if title contains non-English characters (Chinese, Arabic, etc.)
+        # Check for Chinese characters, Arabic script, etc.
+        non_english_patterns = [
+            r'[\u4e00-\u9fff]',  # Chinese characters
+            r'[\u0600-\u06ff]',  # Arabic
+            r'[\u0400-\u04ff]',  # Cyrillic
+            r'[\u3040-\u309f]',  # Hiragana
+            r'[\u30a0-\u30ff]',  # Katakana
+            r'[\u0e00-\u0e7f]',  # Thai
+            r'[\u1100-\u11ff]',  # Hangul
+        ]
+        
+        for pattern in non_english_patterns:
+            if re.search(pattern, title):
+                self.logger.info(f"Skipping {title}: contains non-English characters")
+                should_skip = True
+                break
+        
+        # Check language metadata - skip if not English
+        page_lang = response.css("html::attr(lang)").get() or ""
+        meta_lang = response.css("meta[property='og:locale']::attr(content)").get() or ""
+        meta_lang_alt = response.css("meta[http-equiv='content-language']::attr(content)").get() or ""
+        
+        # If language is explicitly set and not English, skip
+        all_langs = f"{page_lang} {meta_lang} {meta_lang_alt}".lower()
+        if all_langs and not any(lang in all_langs for lang in ["en", "english"]):
+            # Check if it's explicitly a non-English language
+            non_english_langs = ["zh", "chinese", "hi", "hindi", "ja", "japanese", "ko", "korean", 
+                               "ar", "arabic", "es", "spanish", "fr", "french", "de", "german",
+                               "it", "italian", "pt", "portuguese", "ru", "russian", "th", "thai"]
+            if any(lang in all_langs for lang in non_english_langs):
+                self.logger.info(f"Skipping {title}: non-English language detected ({all_langs})")
+                return
+        
+        if should_skip:
+            return  # Skip this item
+
+        # Extract iframe sources from the detail page using Playwright page evaluation
+        # This ensures we get links after JavaScript has rendered and server buttons are clicked
+        detail_page_links = []
+        page = response.meta.get("playwright_page")
+        
+        if page:
+            try:
+                # Use Playwright to extract all possible video hosting URLs from the rendered page
+                extracted_urls = page.evaluate("""
+                    () => {
+                        const sources = [];
+                        const videoHosts = ["vidoza", "streamtape", "mixdrop", "dood", "filemoon", "upstream", "streamlare", "streamhub", "streamwish", "videostr"];
+                        
+                        // Extract from all iframes
+                        const iframes = Array.from(document.querySelectorAll('iframe'));
+                        iframes.forEach(iframe => {
+                            const src = iframe.src || iframe.getAttribute('data-src') || iframe.getAttribute('data-url') || iframe.getAttribute('src') || '';
+                            if (src && src.startsWith('http') && !src.includes('recaptcha') && !src.includes('google.com') && !src.includes('youtube.com') && !src.includes('1flix.to')) {
+                                sources.push(src);
+                            }
+                        });
+                        
+                        // Extract from data attributes on server buttons/links
+                        const serverElements = Array.from(document.querySelectorAll('[data-link], [data-server], [data-embed], [data-player], [data-url], [data-video], [data-stream], [data-src]'));
+                        serverElements.forEach(el => {
+                            const link = el.getAttribute('data-link') || 
+                                        el.getAttribute('data-server') || 
+                                        el.getAttribute('data-embed') || 
+                                        el.getAttribute('data-player') ||
+                                        el.getAttribute('data-url') ||
+                                        el.getAttribute('data-video') ||
+                                        el.getAttribute('data-stream') ||
+                                        el.getAttribute('data-src');
+                            if (link && link.startsWith('http') && !link.includes('recaptcha') && !link.includes('google.com') && !link.includes('youtube.com') && !link.includes('1flix.to')) {
+                                sources.push(link);
+                            }
+                        });
+                        
+                        // Extract from href attributes that contain video hosting service names
+                        const hrefLinks = Array.from(document.querySelectorAll('a[href]'));
+                        hrefLinks.forEach(el => {
+                            const href = el.href || el.getAttribute('href');
+                            if (href && href.startsWith('http') && videoHosts.some(host => href.toLowerCase().includes(host)) && !href.includes('recaptcha') && !href.includes('google.com') && !href.includes('youtube.com') && !href.includes('1flix.to')) {
+                                sources.push(href);
+                            }
+                        });
+                        
+                        // Extract from onclick handlers
+                        const onclickElements = Array.from(document.querySelectorAll('[onclick]'));
+                        onclickElements.forEach(el => {
+                            const onclick = el.getAttribute('onclick') || '';
+                            const urlMatch = onclick.match(/['"](https?:\/\/[^'"]+)['"]/);
+                            if (urlMatch && urlMatch[1] && videoHosts.some(host => urlMatch[1].toLowerCase().includes(host)) && !urlMatch[1].includes('recaptcha') && !urlMatch[1].includes('google.com') && !urlMatch[1].includes('youtube.com') && !urlMatch[1].includes('1flix.to')) {
+                                sources.push(urlMatch[1]);
+                            }
+                        });
+                        
+                        // Extract from JavaScript code in script tags
+                        const scripts = Array.from(document.querySelectorAll('script'));
+                        scripts.forEach(script => {
+                            const text = script.textContent || '';
+                            // Look for video hosting URLs in JavaScript
+                            const urlPattern = /['"](https?:\/\/[^'"]*(?:vidoza|streamtape|mixdrop|dood|filemoon|upstream|streamlare|streamhub|streamwish|videostr)[^'"]*)['"]/gi;
+                            const matches = text.matchAll(urlPattern);
+                            for (const match of matches) {
+                                if (match[1] && !match[1].includes('recaptcha') && !match[1].includes('google.com') && !match[1].includes('youtube.com') && !match[1].includes('1flix.to')) {
+                                    sources.push(match[1]);
+                                }
+                            }
+                        });
+                        
+                        // Also check for video elements
+                        const videos = Array.from(document.querySelectorAll('video source, video'));
+                        videos.forEach(video => {
+                            const src = video.src || video.getAttribute('src');
+                            if (src && src.startsWith('http')) {
+                                sources.push(src);
+                            }
+                        });
+                        
+                        return [...new Set(sources)]; // Remove duplicates
+                    }
+                """)
+                
+                if extracted_urls:
+                    detail_page_links.extend(extracted_urls)
+                    self.logger.info(f"Extracted {len(extracted_urls)} URLs from Playwright page evaluation")
+            except Exception as e:
+                self.logger.warning(f"Error extracting URLs from Playwright page: {e}")
+        
+        # Also extract from static HTML as fallback
         iframe_sources = response.css("iframe::attr(src)").getall()
         iframe_sources += response.css("iframe::attr(data-src)").getall()
         iframe_sources += response.css("iframe::attr(data-url)").getall()
-        
-        # Also extract from data attributes on server buttons/links
         data_links = response.css("[data-link]::attr(data-link)").getall()
         data_links += response.css("[data-server]::attr(data-server)").getall()
         data_links += response.css("[data-embed]::attr(data-embed)").getall()
@@ -239,59 +434,240 @@ class OneFlixSpider(scrapy.Spider):
                 if iframe_src not in detail_page_links:
                     detail_page_links.append(iframe_src)
         
-        self.logger.info(f"Extracted {len(detail_page_links)} video hosting URLs from detail page")
+        self.logger.info(f"Extracted {len(detail_page_links)} total video hosting URLs from detail page")
 
         # After page parse, attempt AJAX endpoint to fetch actual stream servers.
+        # Try multiple methods to extract movie_id
         movie_id = None
         slug = item["imdb_id"]
+        
+        # Method 1: Extract from slug (e.g., "watch-12345-title" -> "12345")
         for part in slug.split("-"):
-            if part.isdigit():
+            if part.isdigit() and len(part) >= 4:  # At least 4 digits
                 movie_id = part
                 break
+        
+        # Method 2: Extract from URL directly
+        if not movie_id:
+            url_id_match = re.search(r'/(\d{4,})', response.url)
+            if url_id_match:
+                movie_id = url_id_match.group(1)
+        
+        # Method 3: Extract from page content (data attributes, IDs, etc.)
+        if not movie_id:
+            page = response.meta.get("playwright_page")
+            if page:
+                try:
+                    extracted_id = page.evaluate("""
+                        () => {
+                            // Try to find movie ID in various data attributes
+                            const idSelectors = [
+                                '[data-id]', '[data-movie-id]', '[data-film-id]',
+                                '[id*="movie"]', '[id*="film"]', '[class*="movie-id"]'
+                            ];
+                            for (const selector of idSelectors) {
+                                const el = document.querySelector(selector);
+                                if (el) {
+                                    const id = el.getAttribute('data-id') || 
+                                              el.getAttribute('data-movie-id') ||
+                                              el.getAttribute('data-film-id') ||
+                                              el.id;
+                                    if (id && /^\d{4,}$/.test(id)) {
+                                        return id;
+                                    }
+                                }
+                            }
+                            return null;
+                        }
+                    """)
+                    if extracted_id:
+                        movie_id = extracted_id
+                except:
+                    pass
+        
+        self.logger.info(f"Extracted movie_id: {movie_id} for {item.get('title', 'Unknown')}")
 
-        if movie_id:
-            # Use Playwright to interact with the page and extract video hosting URLs
-            # Request the AJAX endpoint with Playwright to render it
-            ajax_url = f"https://1flix.to/ajax/episode/list/{movie_id}"
+        # For TV shows, try to find and follow episode links first
+        is_tv_show = item.get("type") == "show"
+        episode_links = []
+        
+        if is_tv_show:
+            # Extract episode links from the page
+            page = response.meta.get("playwright_page")
+            if page:
+                try:
+                    episode_urls = page.evaluate("""
+                        () => {
+                            const episodeLinks = [];
+                            // Look for episode links - common patterns
+                            const selectors = [
+                                'a[href*="/episode/"]',
+                                'a[href*="/ep/"]',
+                                'a[href*="/watch/"]',
+                                '.episode-item a',
+                                '.episode-list a',
+                                '[data-episode] a',
+                                '.season-episode-list a'
+                            ];
+                            selectors.forEach(selector => {
+                                const elements = Array.from(document.querySelectorAll(selector));
+                                elements.forEach(el => {
+                                    const href = el.href || el.getAttribute('href');
+                                    if (href && href.includes('1flix.to') && (href.includes('/episode/') || href.includes('/ep/') || href.includes('/watch/'))) {
+                                        episodeLinks.push(href);
+                                    }
+                                });
+                            });
+                            return [...new Set(episodeLinks)].slice(0, 5); // Get first 5 episodes
+                        }
+                    """)
+                    if episode_urls:
+                        episode_links = episode_urls
+                        self.logger.info(f"Found {len(episode_links)} episode links for TV show: {item.get('title', 'Unknown')}")
+                except Exception as e:
+                    self.logger.warning(f"Error extracting episode links: {e}")
+            
+            # Also check static HTML for episode links
+            episode_selectors = [
+                'a[href*="/episode/"]::attr(href)',
+                'a[href*="/ep/"]::attr(href)',
+                '.episode-item a::attr(href)',
+                '.episode-list a::attr(href)',
+            ]
+            for selector in episode_selectors:
+                episode_links.extend(response.css(selector).getall())
+            
+            # Follow first episode link to get streaming links (episodes usually have the same servers)
+            if episode_links:
+                first_episode = episode_links[0]
+                if first_episode.startswith('/'):
+                    first_episode = f"https://1flix.to{first_episode}"
+                elif not first_episode.startswith('http'):
+                    first_episode = f"https://1flix.to/{first_episode}"
+                
+                self.logger.info(f"Following first episode link for TV show: {first_episode}")
+                yield Request(
+                    first_episode,
+                    callback=self.parse_movie_page,  # Reuse same parser
+                    meta={
+                        "playwright": True,
+                        "playwright_page_goto_kwargs": {"wait_until": "networkidle", "timeout": 30000},
+                        "playwright_page_coroutines": [
+                            {"coroutine": "wait_for_timeout", "args": [5000]},
+                            {
+                                "coroutine": "evaluate",
+                                "args": ["""
+                                    () => {
+                                        window.scrollTo(0, document.body.scrollHeight);
+                                        const selectors = ['a[data-link]', 'button[data-link]', 'a[data-server]', 'button[data-server]', '.server-item a', '.server-btn', '[class*="server"] a', '[class*="server"] button', '[data-id]', '.btn-server', '.episode-server-item', '.server-list a', '[onclick*="server"]', '[onclick*="load"]'];
+                                        let clicked = 0;
+                                        selectors.forEach(selector => {
+                                            const elements = Array.from(document.querySelectorAll(selector));
+                                            elements.forEach((el) => {
+                                                if (clicked < 30 && el.offsetParent !== null) {
+                                                    try { el.scrollIntoView({behavior: 'auto', block: 'center'}); el.click(); clicked++; } catch(e) {}
+                                                }
+                                            });
+                                        });
+                                        return clicked;
+                                    }
+                                """]
+                            },
+                            {"coroutine": "wait_for_timeout", "args": [10000]},
+                        ],
+                    },
+                    dont_filter=True,
+                )
+                # Don't return yet - continue to extract links from main page too
+        
+        # Always filter detail page links first
+        filtered_links = []
+        for link in detail_page_links:
+            link_lower = link.lower()
+            # Exclude YouTube (trailers) and 1flix.to
+            if "youtube.com" in link_lower or "youtu.be" in link_lower or "1flix.to" in link_lower:
+                continue
+            # Only include actual video hosting services
+            video_hosts = ["vidoza", "streamtape", "mixdrop", "dood", "filemoon", "upstream", "streamlare", "streamhub", "streamwish", "videostr"]
+            if any(host in link_lower for host in video_hosts):
+                filtered_links.append(link)
+        
+        # If we found links from detail page, use them
+        if filtered_links:
+            item["links"] = [
+                {
+                    "quality": "HD",
+                    "language": "EN",
+                    "source_url": link,
+                    "is_active": True,
+                }
+                for link in filtered_links[:5]
+            ]
+            self.logger.info(f"Found {len(filtered_links)} links from detail page for {item.get('title', 'Unknown')}")
+            
+            # If we have movie_id, also try AJAX to get MORE links (will merge in parse_ajax_links)
+            if movie_id:
+                yield Request(
+                    f"https://1flix.to/ajax/episode/list/{movie_id}",
+                    callback=self.parse_ajax_links,
+                    meta={
+                        "item": item,
+                        "original_url": response.url,
+                        "detail_page_links": filtered_links,  # Pass existing links to merge
+                        "playwright": True,
+                        "playwright_page_goto_kwargs": {"wait_until": "networkidle", "timeout": 30000},
+                        "playwright_page_coroutines": [
+                            {"coroutine": "wait_for_timeout", "args": [3000]},
+                            {
+                                "coroutine": "evaluate",
+                                "args": ["""
+                                    () => {
+                                        const selectors = ['a[data-link]', 'button[data-link]', 'a[data-server]', 'button[data-server]', '.server-item a', '.server-btn', '[class*="server"] a', '[class*="server"] button', '[data-id]', '.btn-server', '.episode-server-item', '.server-list a', '[onclick*="server"]', '[onclick*="load"]'];
+                                        let clicked = 0;
+                                        selectors.forEach(selector => {
+                                            const elements = Array.from(document.querySelectorAll(selector));
+                                            elements.forEach((el) => {
+                                                if (clicked < 20 && el.offsetParent !== null) {
+                                                    try { el.scrollIntoView({behavior: 'auto', block: 'center'}); el.click(); clicked++; } catch(e) {}
+                                                }
+                                            });
+                                        });
+                                        return clicked;
+                                    }
+                                """]
+                            },
+                            {"coroutine": "wait_for_timeout", "args": [8000]},
+                        ],
+                    },
+                    dont_filter=True,
+                )
+            else:
+                # No movie_id but we have links, save immediately
+                yield item
+        elif movie_id:
+            # No detail page links but we have movie_id, try AJAX
             yield Request(
-                ajax_url,
+                f"https://1flix.to/ajax/episode/list/{movie_id}",
                 callback=self.parse_ajax_links,
                 meta={
-                    "item": item, 
-                    "original_url": response.url, 
-                    "detail_page_links": detail_page_links,
+                    "item": item,
+                    "original_url": response.url,
+                    "detail_page_links": [],
                     "playwright": True,
                     "playwright_page_goto_kwargs": {"wait_until": "networkidle", "timeout": 30000},
                     "playwright_page_coroutines": [
-                        {
-                            "coroutine": "wait_for_timeout",
-                            "args": [3000]  # Wait 3 seconds for server buttons to load
-                        },
+                        {"coroutine": "wait_for_timeout", "args": [3000]},
                         {
                             "coroutine": "evaluate",
                             "args": ["""
                                 () => {
-                                    // Click on all server buttons to reveal video players
-                                    const selectors = [
-                                        'a[data-link]', 'button[data-link]', 
-                                        'a[data-server]', 'button[data-server]',
-                                        '.server-item a', '.server-btn',
-                                        '[class*="server"] a', '[class*="server"] button',
-                                        '[data-id]', '.btn-server',
-                                        '.episode-server-item', '.server-list a',
-                                        '[onclick*="server"]', '[onclick*="load"]'
-                                    ];
-                                    
+                                    const selectors = ['a[data-link]', 'button[data-link]', 'a[data-server]', 'button[data-server]', '.server-item a', '.server-btn', '[class*="server"] a', '[class*="server"] button', '[data-id]', '.btn-server', '.episode-server-item', '.server-list a', '[onclick*="server"]', '[onclick*="load"]'];
                                     let clicked = 0;
                                     selectors.forEach(selector => {
                                         const elements = Array.from(document.querySelectorAll(selector));
-                                        elements.forEach((el, index) => {
-                                            if (clicked < 15 && el.offsetParent !== null) { // Only visible elements
-                                                try { 
-                                                    el.scrollIntoView({behavior: 'auto', block: 'center'});
-                                                    el.click();
-                                                    clicked++;
-                                                } catch(e) {}
+                                        elements.forEach((el) => {
+                                            if (clicked < 20 && el.offsetParent !== null) {
+                                                try { el.scrollIntoView({behavior: 'auto', block: 'center'}); el.click(); clicked++; } catch(e) {}
                                             }
                                         });
                                     });
@@ -299,40 +675,16 @@ class OneFlixSpider(scrapy.Spider):
                                 }
                             """]
                         },
-                        {
-                            "coroutine": "wait_for_timeout",
-                            "args": [5000]  # Wait 5 seconds for video players to load after clicking
-                        }
+                        {"coroutine": "wait_for_timeout", "args": [8000]},
                     ],
                 },
                 dont_filter=True,
             )
         else:
-            # If no movie_id found, use detail page links if any (but filter them first)
-            filtered_links = []
-            for link in detail_page_links:
-                link_lower = link.lower()
-                # Exclude YouTube (trailers) and 1flix.to
-                if "youtube.com" in link_lower or "youtu.be" in link_lower or "1flix.to" in link_lower:
-                    continue
-                # Only include actual video hosting services
-                video_hosts = ["vidoza", "streamtape", "mixdrop", "dood", "filemoon", "upstream", "streamlare", "streamhub", "streamwish", "videostr"]
-                if any(host in link_lower for host in video_hosts):
-                    filtered_links.append(link)
-            
-            if filtered_links:
-                item["links"] = [
-                    {
-                        "quality": "HD",
-                        "language": "EN",
-                        "source_url": link,
-                        "is_active": True,
-                    }
-                    for link in filtered_links[:3]  # Limit to first 3
-                ]
-            # Don't yield item if no valid links found - we don't want movies without playable links
-            if item.get("links"):
-                yield item
+            # No movie_id and no links - save without links
+            self.logger.warning(f"No movie_id and no links found for {item.get('title', 'Unknown')} - saving without links")
+            item["links"] = []
+            yield item
 
     def parse_ajax_links(self, response):
         """
@@ -626,13 +978,29 @@ class OneFlixSpider(scrapy.Spider):
                     }
                 )
 
-        # Only save if we found real video hosting links
-        # Never save 1flix.to detail pages or reCAPTCHA URLs
-        if links:
-            item["links"] = links
-            self.logger.info(f"Found {len(links)} stream links for {item.get('title', 'Unknown')}")
-            yield item
+        # Merge AJAX links with detail page links (avoid duplicates)
+        detail_page_links = response.meta.get("detail_page_links", [])
+        all_links = links.copy() if links else []
+        
+        # Add detail page links that aren't already in links
+        existing_urls = {link.get("source_url") for link in all_links}
+        for detail_link in detail_page_links:
+            if detail_link not in existing_urls:
+                all_links.append({
+                    "quality": "HD",
+                    "language": "EN",
+                    "source_url": detail_link,
+                    "is_active": True,
+                })
+        
+        # Save item with all links found
+        if all_links:
+            item["links"] = all_links
+            self.logger.info(f"Found {len(all_links)} total stream links for {item.get('title', 'Unknown')} ({len(links)} from AJAX, {len(detail_page_links)} from detail page)")
         else:
-            # Don't save movies without valid playable links
-            self.logger.warning(f"No valid stream links found for {item.get('title', 'Unknown')} - skipping movie")
+            # Save movie without links - they can be updated later
+            item["links"] = []
+            self.logger.warning(f"No valid stream links found for {item.get('title', 'Unknown')} - saving without links")
+        
+        yield item
 

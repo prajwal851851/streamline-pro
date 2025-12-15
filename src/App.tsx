@@ -18,7 +18,6 @@ import Movies from "./pages/Movies";
 import TvShows from "./pages/TvShows";
 import Trending from "./pages/Trending";
 import MovieDetail from "./pages/MovieDetail";
-import Streaming from "./pages/Streaming";
 import StreamingDetail from "./pages/StreamingDetail";
 import Categories from "./pages/Categories";
 import Kids from "./pages/Kids";
@@ -50,7 +49,6 @@ const ProtectedApp = () => {
           <Route path="/movies" element={<Movies />} />
           <Route path="/movies/:id" element={<MovieDetail />} />
           <Route path="/watch/:id" element={<Watch />} />
-          <Route path="/streaming" element={<Streaming />} />
           <Route path="/streaming/:id" element={<StreamingDetail />} />
           <Route path="/tv-shows" element={<TvShows />} />
           <Route path="/trending" element={<Trending />} />

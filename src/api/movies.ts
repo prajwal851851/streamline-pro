@@ -29,7 +29,15 @@ export async function fetchStreamingMovies(): Promise<StreamingMovie[]> {
   return apiGet<StreamingMovie[]>("/streaming/movies/");
 }
 
+export async function fetchStreamingMoviesByType(type: "movie" | "show"): Promise<StreamingMovie[]> {
+  return apiGet<StreamingMovie[]>(`/streaming/movies/?type=${type}`);
+}
+
 export async function fetchStreamingMovie(id: string | number): Promise<StreamingMovie> {
   return apiGet<StreamingMovie>(`/streaming/movies/${id}/`);
+}
+
+export async function refreshStreamingMovieLinks(id: string | number): Promise<{ message: string; status: string }> {
+  return apiPost<{ message: string; status: string }>(`/streaming/movies/${id}/refresh_links/`, {});
 }
 
