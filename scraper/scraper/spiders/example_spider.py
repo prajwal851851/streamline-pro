@@ -22,9 +22,14 @@ class OneFlixSpider(scrapy.Spider):
     Enhanced spider that finds REAL streaming links (not YouTube trailers)
     """
 
+    # NOTE: Keep spider name 'oneflix' so existing commands still work,
+    # but we now target fmovies-co.net instead of 1flix.to
     name = "oneflix"
-    allowed_domains = ["1flix.to"]
-    start_urls = ["https://1flix.to/home"]
+    allowed_domains = ["fmovies-co.net"]
+    start_urls = [
+        "https://fmovies-co.net/home",
+        "https://fmovies-co.net/movie",
+    ]
     
     # CRITICAL: Patterns to REJECT
     REJECT_PATTERNS = [
@@ -38,9 +43,16 @@ class OneFlixSpider(scrapy.Spider):
         # Movie info sites (not streaming)
         'imdb.com', 'themoviedb.org', 'tvdb.com', 'rottentomatoes.com',
         
-        # Site navigation
-        '1flix.to/movie/', '1flix.to/tv/', '1flix.to/search',
-        '1flix.to/home', '1flix.to/genre', '1flix.to/trending',
+        # Known NON-streaming / anti-bot / tracking / banner domains
+        'google.com/recaptcha', 'www.google.com/recaptcha', 'recaptcha',
+        'sysmeasuring.net', 'anicrush.to',
+        
+        # Site navigation (for fmovies-co.net)
+        'fmovies-co.net/home',
+        'fmovies-co.net/movie',
+        'fmovies-co.net/tv',
+        'fmovies-co.net/tv-show',
+        'fmovies-co.net/top-imdb',
         'javascript:', 'mailto:', '#', 'void(0)',
     ]
     
@@ -84,6 +96,7 @@ class OneFlixSpider(scrapy.Spider):
         self.on_demand_mode = bool(self.target_url)
         
         if self.on_demand_mode:
+            # In on-demand mode we trust the full target_url (can be any supported site)
             self.start_urls = [self.target_url]
             logger.info(f"🎯 ON-DEMAND MODE: Scraping {self.target_url}")
 
@@ -320,7 +333,7 @@ class OneFlixSpider(scrapy.Spider):
         )
         item["synopsis"] = synopsis.strip()
         
-        # Extract streaming links (FILTERED)
+        # Extract streaming links (FILTERED) from fmovies-co.net pages
         links = self._extract_streaming_links(response)
         
         if not links:
@@ -409,45 +422,57 @@ class OneFlixSpider(scrapy.Spider):
                             });
                         });
                         
-                        // 3. LINKS with embed/player/stream keywords
+                        // 3. LINKS - More aggressive: accept external domains or streaming keywords
                         document.querySelectorAll('a[href]').forEach(a => {
                             const href = a.href;
-                            if (href && (
-                                href.includes('embed') || href.includes('player') || 
-                                href.includes('watch') || href.includes('stream') ||
-                                href.includes('/e/') || href.includes('/v/') ||
-                                href.includes('/f/') || href.includes('/d/')
-                            )) {
-                                sources.add(href);
+                            if (href && href.startsWith('http')) {
+                                const isExternal = !href.includes('1flix.to');
+                                const hasKeywords = href.includes('embed') || href.includes('player') || 
+                                                   href.includes('watch') || href.includes('stream') ||
+                                                   href.includes('/e/') || href.includes('/v/') ||
+                                                   href.includes('/f/') || href.includes('/d/');
+                                // Accept if has keywords OR is external domain (not YouTube/Facebook)
+                                if (hasKeywords || (isExternal && !href.includes('youtube') && 
+                                    !href.includes('facebook') && !href.includes('twitter') && 
+                                    !href.includes('instagram'))) {
+                                    sources.add(href);
+                                }
                             }
                         });
                         
-                        // 4. ONCLICK handlers
+                        // 4. ONCLICK handlers - Extract ALL URLs
                         document.querySelectorAll('[onclick]').forEach(el => {
                             const onclick = el.getAttribute('onclick') || '';
                             const urlMatches = onclick.matchAll(/['"](https?:\\/\\/[^'"]+)['"]/g);
                             for (const match of urlMatches) {
                                 const url = match[1];
-                                if (url.includes('embed') || url.includes('player') || 
-                                    url.includes('stream') || url.includes('/e/') ||
-                                    url.includes('/v/') || url.includes('/f/')) {
+                                // Accept if not YouTube/Facebook/Twitter
+                                if (url && !url.includes('youtube') && !url.includes('facebook') && 
+                                    !url.includes('twitter') && !url.includes('instagram')) {
                                     sources.add(url);
                                 }
                             }
                         });
                         
-                        // 5. SCRIPT tags - Look for video sources
+                        // 5. SCRIPT tags - Look for ALL video/stream URLs and external domains
                         document.querySelectorAll('script').forEach(script => {
                             const text = script.textContent || '';
-                            // Look for common streaming patterns in scripts
+                            // More permissive patterns
                             const patterns = [
-                                /(https?:\\/\\/[^\\s"']+?(?:embed|player|stream|video|\/e\/|\/v\/)[^\\s"'<>]*)/gi,
-                                /(https?:\\/\\/(?:streamtape|mixdrop|dood|vidoza|upstream)[^\\s"'<>]+)/gi
+                                /(https?:\\/\\/[^\\s"']+?(?:embed|player|stream|video|\/e\/|\/v\/|\/f\/|\/d\/)[^\\s"'<>]*)/gi,
+                                /(https?:\\/\\/(?:streamtape|mixdrop|dood|vidoza|upstream|filemoon|voe|streamlare|mp4upload)[^\\s"'<>]+)/gi,
+                                // Also catch external domain URLs
+                                /(https?:\\/\\/[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\\.[a-zA-Z]{2,}[^\\s"'<>]*)/gi
                             ];
                             patterns.forEach(pattern => {
                                 const matches = text.matchAll(pattern);
                                 for (const match of matches) {
-                                    sources.add(match[1]);
+                                    const url = match[1];
+                                    if (url && !url.includes('1flix.to') && 
+                                        !url.includes('youtube') && !url.includes('facebook') && 
+                                        !url.includes('twitter') && !url.includes('instagram')) {
+                                        sources.add(url);
+                                    }
                                 }
                             });
                         });
@@ -460,6 +485,9 @@ class OneFlixSpider(scrapy.Spider):
                 if extracted_urls:
                     logger.info(f"🔍 Playwright extracted {len(extracted_urls)} URLs")
                     all_urls.update(extracted_urls)
+                    # Log first few URLs for debugging
+                    for i, url in enumerate(list(extracted_urls)[:5], 1):
+                        logger.info(f"   Found URL {i}: {url[:100]}")
                     
             except Exception as e:
                 logger.warning(f"⚠️ Playwright extraction failed: {e}")
@@ -469,7 +497,7 @@ class OneFlixSpider(scrapy.Spider):
         all_urls.update(static_urls)
         logger.info(f"🔍 Static HTML found {len(static_urls)} additional URLs")
         
-        # CRITICAL: Filter and validate all URLs
+        # CRITICAL: Filter and validate all URLs - MORE PERMISSIVE
         valid_links = []
         rejected_youtube = 0
         rejected_other = 0
@@ -480,7 +508,7 @@ class OneFlixSpider(scrapy.Spider):
                 rejected_other += 1
                 continue
             
-            # Reject bad patterns
+            # Reject bad patterns (YouTube, social media, etc.)
             if self._should_reject_url(url):
                 if self._is_youtube_url(url):
                     rejected_youtube += 1
@@ -490,23 +518,36 @@ class OneFlixSpider(scrapy.Spider):
                     logger.debug(f"❌ Rejected (bad pattern): {url[:60]}")
                 continue
             
-            # Accept if from known video host OR has stream patterns
+            # NEW: More permissive logic
+            # Accept if:
+            # 1. From known video host, OR
+            # 2. Has stream patterns, OR
+            # 3. Is external domain (not fmovies-co.net) - assume it could be a streaming host
+            
             is_video_host = self._is_video_host_url(url)
             has_stream_pattern = self._has_stream_patterns(url)
+            is_external_domain = 'fmovies-co.net' not in url.lower()
             
-            if is_video_host or has_stream_pattern:
+            # Accept if matches any criteria
+            if is_video_host or has_stream_pattern or is_external_domain:
                 valid_links.append({
                     "quality": self._detect_quality(url),
                     "language": "EN",
                     "source_url": url,
                     "is_active": True,
                 })
-                logger.info(f"✅ ACCEPTED: {url[:80]}")
+                logger.info(f"✅ ACCEPTED: {url[:100]}")
             else:
                 rejected_other += 1
                 logger.debug(f"❌ Rejected (not video-like): {url[:60]}")
         
         logger.info(f"📊 Filtering: Accepted={len(valid_links)}, YouTube={rejected_youtube}, Other={rejected_other}")
+        
+        # Log sample of rejected URLs for debugging if no links accepted
+        if len(valid_links) == 0 and all_urls:
+            logger.warning(f"⚠️ No links accepted! Sample URLs found:")
+            for i, url in enumerate(list(all_urls)[:5], 1):
+                logger.warning(f"   {i}. {url[:100]}")
         
         # Remove duplicates
         seen = set()
@@ -520,7 +561,7 @@ class OneFlixSpider(scrapy.Spider):
         return unique_links
 
     def _extract_from_static_html(self, response: TextResponse):
-        """Extract URLs from static HTML"""
+        """Extract URLs from static HTML - More aggressive"""
         urls = set()
         
         # Extract from various sources
@@ -533,23 +574,53 @@ class OneFlixSpider(scrapy.Spider):
             "a[href*='embed']::attr(href)", "a[href*='player']::attr(href)",
             "a[href*='stream']::attr(href)", "a[href*='/e/']::attr(href)",
             "a[href*='/v/']::attr(href)", "a[href*='/f/']::attr(href)",
+            # Also get all external links
+            "a[href^='http']::attr(href)",
         ]
         
         for selector in selectors:
             found_urls = response.css(selector).getall()
-            urls.update(found_urls)
+            # Filter out fmovies-co.net internal links and clearly bad domains
+            for url in found_urls:
+                if url and url.startswith('http'):
+                    url_lower = url.lower()
+                    if (
+                        'fmovies-co.net' not in url_lower
+                        and 'youtube' not in url_lower
+                        and 'facebook' not in url_lower
+                        and 'twitter' not in url_lower
+                        and 'google.com/recaptcha' not in url_lower
+                        and 'recaptcha' not in url_lower
+                        and 'sysmeasuring.net' not in url_lower
+                        and 'anicrush.to' not in url_lower
+                    ):
+                        urls.add(url)
         
-        # Extract from script tags
+        # Extract from script tags - more permissive
         scripts = response.css("script::text").getall()
         for script in scripts:
-            # Find streaming URLs in scripts
+            # Find streaming / external URLs in scripts
             patterns = [
-                r'(https?://[^\s"\']+?(?:embed|player|stream|video|/e/|/v/)[^\s"\'<>]*)',
-                r'(https?://(?:streamtape|mixdrop|dood|vidoza|upstream)[^\s"\'<>]+)',
+                r'(https?://[^\s"\']+?(?:embed|player|stream|video|/e/|/v/|/f/|/d/)[^\s"\'<>]*)',
+                r'(https?://(?:streamtape|mixdrop|dood|vidoza|upstream|filemoon|voe|streamlare|mp4upload)[^\s"\'<>]+)',
+                # Also catch external domain URLs
+                r'(https?://[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}[^\s"\'<>]*)',
             ]
             for pattern in patterns:
                 matches = re.findall(pattern, script, re.IGNORECASE)
-                urls.update(matches)
+                for match in matches:
+                    match_lower = match.lower()
+                    if (
+                        'fmovies-co.net' not in match_lower
+                        and 'youtube' not in match_lower
+                        and 'facebook' not in match_lower
+                        and 'twitter' not in match_lower
+                        and 'google.com/recaptcha' not in match_lower
+                        and 'recaptcha' not in match_lower
+                        and 'sysmeasuring.net' not in match_lower
+                        and 'anicrush.to' not in match_lower
+                    ):
+                        urls.add(match)
         
         return urls
 

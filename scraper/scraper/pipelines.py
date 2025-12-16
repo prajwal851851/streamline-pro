@@ -74,9 +74,10 @@ class DjangoWriterPipeline:
             # Movie info sites
             "imdb.com", "themoviedb.org", "tvdb.com", "rottentomatoes.com",
             
-            # Other
-            "google.com", "recaptcha",
-            "1flix.to/movie/", "1flix.to/tv/",
+            # Other (captcha, tracking, non-streaming, banners)
+            "google.com", "recaptcha", "sysmeasuring.net", "anicrush.to",
+            # fmovies site navigation (not real streams)
+            "fmovies-co.net/home", "fmovies-co.net/movie", "fmovies-co.net/tv", "fmovies-co.net/tv-show",
             "javascript:", "#",
         ]
         
@@ -144,10 +145,13 @@ class DjangoWriterPipeline:
             # Check if has streaming keywords
             has_streaming_keyword = any(keyword in url_lower for keyword in STREAMING_PATTERNS)
             
-            # ACCEPT if either condition is true
-            if is_video_host or has_streaming_keyword:
+            # Check if it's an external domain (not fmovies-co.net)
+            is_external_domain = 'fmovies-co.net' not in url_lower
+            
+            # ACCEPT if any condition is true (more permissive)
+            if is_video_host or has_streaming_keyword or is_external_domain:
                 valid_links.append(link)
-                logger.info(f"✅ ACCEPTED: {source_url[:80]}")
+                logger.info(f"✅ ACCEPTED: {source_url[:100]}")
             else:
                 rejected_count += 1
                 rejected_stats['not_video_like'] += 1

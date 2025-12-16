@@ -208,24 +208,74 @@ const StreamingDetail = () => {
                       </div>
                     );
                   } else {
-                    // Unknown URL type - offer to open in new tab
-                    return (
-                      <div className="w-full h-full flex flex-col items-center justify-center gap-4 p-8">
-                        <div className="text-center space-y-2">
-                          <p className="text-lg text-white">Stream Link Available</p>
-                          <p className="text-sm text-muted-foreground">
-                            Click the button below to open the stream
-                          </p>
+                    // Unknown URL type - default to embedding in our site with iframe
+                    if (iframeError) {
+                      return (
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-4 p-8 bg-background/20">
+                          <AlertCircle className="w-12 h-12 text-destructive" />
+                          <div className="text-center space-y-2">
+                            <p className="text-lg text-white font-semibold">Unable to load stream</p>
+                            <p className="text-sm text-muted-foreground">
+                              This stream may be blocked from embedding or temporarily unavailable.
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setIframeError(false);
+                                setIsLoadingVideo(true);
+                                if (iframeRef.current) {
+                                  iframeRef.current.src = iframeRef.current.src; // Reload
+                                }
+                              }}
+                              className="gap-2"
+                            >
+                              <RefreshCw className="w-4 h-4" />
+                              Retry
+                            </Button>
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors inline-flex items-center gap-2 text-sm"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                              Open in New Tab
+                            </a>
+                          </div>
                         </div>
-                        <a
-                          href={url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="px-6 py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors inline-flex items-center gap-2"
-                        >
-                          <Play className="w-5 h-5" />
-                          Open Stream
-                        </a>
+                      );
+                    }
+
+                    return (
+                      <div className="relative w-full h-full">
+                        {isLoadingVideo && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+                            <div className="text-center space-y-2">
+                              <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div>
+                              <p className="text-sm text-muted-foreground">Loading stream...</p>
+                            </div>
+                          </div>
+                        )}
+                        <iframe
+                          ref={iframeRef}
+                          key={activeLink.id}
+                          src={url}
+                          className="w-full h-full bg-black"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                          title={movie.title}
+                          onLoad={() => {
+                            setIsLoadingVideo(false);
+                            setIframeError(false);
+                          }}
+                          onError={() => {
+                            setIsLoadingVideo(false);
+                            setIframeError(true);
+                          }}
+                        />
                       </div>
                     );
                   }
