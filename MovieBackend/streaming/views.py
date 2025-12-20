@@ -5,12 +5,12 @@ from rest_framework.permissions import AllowAny
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
 from datetime import timedelta
-import requests
 import logging
 
 from .models import Movie, StreamingLink
 from .serializers import MovieSerializer
 from .scraper_utils import scrape_movie_on_demand
+from .link_health import check_link_health
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,8 @@ class StreamingMovieViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vi
         
         validated_links = []
         for link in links:
-            if self._check_link_health(link.source_url):
+            result = check_link_health(link.source_url)
+            if result.is_healthy:
                 link.is_active = True
                 link.last_checked = timezone.now()
                 link.save(update_fields=['is_active', 'last_checked'])
@@ -129,36 +130,3 @@ class StreamingMovieViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vi
         data['total_links_checked'] = links.count()
         
         return Response(data)
-    
-    def _check_link_health(self, url: str, timeout: int = 5) -> bool:
-        """
-        Check if a streaming link is healthy by making a HEAD request.
-        Returns True if link is working, False otherwise.
-        """
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            response = requests.head(
-                url,
-                timeout=timeout,
-                headers=headers,
-                allow_redirects=True
-            )
-            
-            # Consider 200-399 as healthy
-            if 200 <= response.status_code < 400:
-                return True
-            
-            logger.debug(f"❌ Unhealthy link (status {response.status_code}): {url[:80]}")
-            return False
-            
-        except requests.Timeout:
-            logger.debug(f"⏱️  Timeout: {url[:80]}")
-            return False
-        except requests.RequestException as e:
-            logger.debug(f"❌ Request error: {url[:80]} - {str(e)[:50]}")
-            return False
-        except Exception as e:
-            logger.warning(f"❌ Unexpected error checking {url[:80]}: {str(e)[:50]}")
-            return False

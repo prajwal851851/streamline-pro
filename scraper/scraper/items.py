@@ -2,6 +2,7 @@ import scrapy
 
 
 class StreamingItem(scrapy.Item):
+    movie_pk = scrapy.Field()
     imdb_id = scrapy.Field()
     title = scrapy.Field()
     year = scrapy.Field()

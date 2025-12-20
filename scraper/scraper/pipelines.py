@@ -4,8 +4,11 @@
 from datetime import datetime
 from typing import Any, Dict, List
 import logging
-from twisted.internet.threads import deferToThread
+import re
+import threading
+from django.apps import apps
 from django.utils import timezone
+
 
 logger = logging.getLogger(__name__)
 
@@ -16,14 +19,26 @@ class DjangoWriterPipeline:
     """
 
     def process_item(self, item: Dict[str, Any], spider):
-        return deferToThread(self._save_item, item)
+        # Use Twisted's deferToThread when available for Scrapy compatibility.
+        # If Twisted isn't available (import errors), fall back to starting a
+        # background thread so the pipeline doesn't block the reactor.
+        try:
+            from twisted.internet.threads import deferToThread as _defer
+        except Exception:
+            _defer = None
+
+        if _defer:
+            return _defer(self._save_item, item)
+        else:
+            threading.Thread(target=self._save_item, args=(item,), daemon=True).start()
+            return item
 
     def _save_item(self, item: Dict[str, Any]):
-        from streaming.models import Movie, StreamingLink
-
+      
+        movie_pk = item.get("movie_pk")
         imdb_id = item.get("imdb_id")
-        if not imdb_id:
-            raise ValueError("imdb_id is required")
+        if not imdb_id and not movie_pk:
+            raise ValueError("Either imdb_id or movie_pk is required")
 
         defaults = {
             "title": item.get("title") or "",
@@ -33,7 +48,40 @@ class DjangoWriterPipeline:
             "synopsis": item.get("synopsis"),
             "original_detail_url": item.get("original_detail_url"),
         }
-        movie, created = Movie.objects.update_or_create(imdb_id=imdb_id, defaults=defaults)
+
+        update_defaults = {k: v for k, v in defaults.items() if v not in (None, "")}
+        # Import models via apps.get_model to avoid import-time errors
+        # if Django settings aren't fully configured at module import.
+        Movie = apps.get_model('streaming', 'Movie')
+        StreamingLink = apps.get_model('streaming', 'StreamingLink')
+
+        created = False
+        movie = None
+        if movie_pk:
+            try:
+                movie = Movie.objects.get(pk=movie_pk)
+                created = False
+                # Update imdb_id if this scrape found a real tt... id (for cross-source merging)
+                if isinstance(imdb_id, str) and imdb_id.startswith("tt") and movie.imdb_id != imdb_id:
+                    # If another Movie already has this tt id, merge it into the current movie
+                    conflict = Movie.objects.filter(imdb_id=imdb_id).exclude(pk=movie.pk).first()
+                    if conflict:
+                        StreamingLink.objects.filter(movie=conflict).update(movie=movie)
+                        conflict.delete()
+                    Movie.objects.filter(pk=movie.pk).update(imdb_id=imdb_id)
+                    movie.imdb_id = imdb_id
+
+                if update_defaults:
+                    Movie.objects.filter(pk=movie.pk).update(**update_defaults)
+                    for k, v in update_defaults.items():
+                        setattr(movie, k, v)
+            except Movie.DoesNotExist:
+                movie = None
+
+        if movie is None:
+            if not imdb_id:
+                raise ValueError("imdb_id is required when movie_pk is not provided")
+            movie, created = Movie.objects.update_or_create(imdb_id=imdb_id, defaults=defaults)
 
         links: List[Dict[str, Any]] = item.get("links") or []
         now = timezone.now()
@@ -70,10 +118,19 @@ class DjangoWriterPipeline:
             "twitter.com", "x.com",
             "instagram.com", "tiktok.com",
             "dailymotion.com", "vimeo.com",
-            
+
             # Movie info sites
             "imdb.com", "themoviedb.org", "tvdb.com", "rottentomatoes.com",
-            
+
+            # AD SITES & REDIRECTS (NEW - blocking ad domains)
+            "111movies.com", "123movies", "watchmovies", "putlocker",
+            "gomovies", "yesmovies", "solarmovies", "moviesjoy",
+            "fmovies.to", "fmovies.se", "fmovies.ws", "fmovies.io",
+            "1flix.to", "flixhq.to", "flixhq.com", "flixhq.ws",
+            "soap2day", "s2dfree", "vidplay", "vidplay.online",
+            "vidsrc.me", "vidsrc.to", "vidsrc.pro", "vidsrc.com",
+            "embedsoap", "multiembed.mov", "player-cdn.com",
+
             # Other (captcha, tracking, non-streaming, banners)
             "google.com", "recaptcha", "sysmeasuring.net", "anicrush.to",
             # fmovies site navigation (not real streams)
@@ -145,18 +202,15 @@ class DjangoWriterPipeline:
             # Check if has streaming keywords
             has_streaming_keyword = any(keyword in url_lower for keyword in STREAMING_PATTERNS)
             
-            # Check if it's an external domain (not fmovies-co.net)
-            is_external_domain = 'fmovies-co.net' not in url_lower
-            
-            # ACCEPT if any condition is true (more permissive)
-            if is_video_host or has_streaming_keyword or is_external_domain:
+            # Accept based on heuristic only; Link Health Checks will determine is_active later.
+            if is_video_host or has_streaming_keyword:
                 valid_links.append(link)
                 logger.info(f"✅ ACCEPTED: {source_url[:100]}")
             else:
                 rejected_count += 1
                 rejected_stats['not_video_like'] += 1
                 logger.debug(f"❌ Rejected (not video-like): {source_url[:60]}")
-        
+            
         # Log comprehensive results
         if not valid_links:
             logger.warning(

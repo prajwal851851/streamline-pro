@@ -6,6 +6,7 @@ import { fetchStreamingMovie, refreshStreamingMovieLinks } from "@/api/movies";
 import { StreamingLink, StreamingMovie } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import Hls from "hls.js";
 
 const StreamingDetail = () => {
   const { id } = useParams<{ id: string }>();
@@ -44,6 +45,39 @@ const StreamingDetail = () => {
 
   const activeLink = selectedLink || links[0] || null;
 
+  useEffect(() => {
+    const url = activeLink?.source_url;
+    const videoEl = videoRef.current;
+    if (!url || !videoEl) return;
+
+    const isHlsStream = /\.m3u8(\?|$)/i.test(url);
+    if (!isHlsStream) return;
+
+    if (Hls.isSupported()) {
+      const hls = new Hls();
+      hls.loadSource(url);
+      hls.attachMedia(videoEl);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setIsLoadingVideo(false);
+      });
+      hls.on(Hls.Events.ERROR, () => {
+        setIsLoadingVideo(false);
+        setIframeError(true);
+      });
+
+      return () => {
+        try {
+          hls.destroy();
+        } catch {
+        }
+      };
+    }
+
+    if (videoEl.canPlayType("application/vnd.apple.mpegurl")) {
+      videoEl.src = url;
+    }
+  }, [activeLink?.id]);
+
   // Reset error state when link changes
   useEffect(() => {
     setIframeError(false);
@@ -81,7 +115,8 @@ const StreamingDetail = () => {
                   const is1FlixUrl = url.includes('1flix.to');
                   
                   // Check if URL is a direct video file
-                  const isDirectVideo = url.match(/\.(mp4|m3u8|webm|ogg|mkv|avi|mov)$/i);
+                  const isDirectVideo = url.match(/\.(mp4|webm|ogg|mkv|avi|mov)$/i);
+                  const isHlsStream = url.match(/\.m3u8(\?|$)/i);
                   
                   // Check if URL is an embeddable iframe (not 1flix.to)
                   const isIframeEmbed = (url.includes('embed') || url.includes('player')) && !is1FlixUrl;
@@ -107,7 +142,7 @@ const StreamingDetail = () => {
                         </a>
                       </div>
                     );
-                  } else if (isDirectVideo) {
+                  } else if (isDirectVideo || isHlsStream) {
                     // Direct video file - use video tag
                     return (
                       <div className="relative w-full h-full">
@@ -125,7 +160,7 @@ const StreamingDetail = () => {
                           controls
                           className="w-full h-full bg-black"
                           poster={movie.poster_url || undefined}
-                          src={url}
+                          src={isHlsStream ? undefined : url}
                           onLoadedData={() => setIsLoadingVideo(false)}
                           onError={() => {
                             setIsLoadingVideo(false);

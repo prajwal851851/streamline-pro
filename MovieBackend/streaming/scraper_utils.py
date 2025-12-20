@@ -47,43 +47,110 @@ def scrape_movie_on_demand(movie_url, movie_id=None):
                 logger.error(f"Python executable not found (sys.executable={sys.executable}, venv={venv_python})")
                 return
             
-            # Build Scrapy command
-            # We'll modify the spider to accept a specific URL to scrape
-            cmd = [
+            movie_pk = str(movie_id) if movie_id is not None else None
+
+            def _run_spider(cmd, label: str):
+                logger.info(f"Starting on-demand scrape ({label})")
+                logger.info(f"Running command: {' '.join(cmd)}")
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=str(scraper_dir),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                timeout_seconds = int(os.environ.get("STREAMLINE_SCRAPE_TIMEOUT", "240"))
+                try:
+                    stdout, stderr = process.communicate(timeout=timeout_seconds)
+                    if process.returncode == 0:
+                        logger.info(f"Successfully scraped ({label})")
+                    else:
+                        logger.warning(f"Scrapy non-zero exit code ({label}): {stderr}")
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    logger.warning(f"Scrapy timeout ({label})")
+
+            # 1) Primary source: 1flix.to via 'oneflix' spider
+            # Only run oneflix when we have a real tt... imdb_id or the provided URL is on 1flix.to.
+            oneflix_target_url = movie_url
+            movie_imdb_id = None
+            movie_type = None
+            if movie_id is not None:
+                try:
+                    from streaming.models import Movie
+                    m = Movie.objects.get(pk=movie_id)
+                    movie_imdb_id = m.imdb_id
+                    movie_type = m.type
+                except Exception:
+                    movie_imdb_id = None
+                    movie_type = None
+
+            should_run_oneflix = False
+            if isinstance(oneflix_target_url, str) and '1flix.to' in oneflix_target_url:
+                should_run_oneflix = True
+            elif isinstance(movie_imdb_id, str) and movie_imdb_id.startswith('tt'):
+                should_run_oneflix = True
+                # Prefer a constructed 1flix URL if the current url is a different domain
+                if isinstance(movie_type, str) and movie_type == 'show':
+                    oneflix_target_url = f"https://1flix.to/tv/{movie_imdb_id}"
+                else:
+                    oneflix_target_url = f"https://1flix.to/movie/{movie_imdb_id}"
+
+            if should_run_oneflix:
+                cmd_oneflix = [
+                    str(python_exe),
+                    '-m', 'scrapy',
+                    'crawl',
+                    'oneflix',
+                    '-a', f'target_url={oneflix_target_url}',
+                    '-a', 'max_pages=1',
+                    '-s', 'LOG_LEVEL=INFO',
+                    '-s', 'CONCURRENT_REQUESTS=1',
+                    '-s', 'DOWNLOAD_DELAY=2',
+                ]
+                if movie_pk:
+                    cmd_oneflix += ['-a', f'movie_pk={movie_pk}']
+                if isinstance(movie_imdb_id, str) and movie_imdb_id:
+                    cmd_oneflix += ['-a', f'imdb_id={movie_imdb_id}']
+
+                _run_spider(cmd_oneflix, label='oneflix')
+
+            # 2) Backup source: fawesome.tv via 'fawesome' spider
+            # We pass title/year by looking up the Movie if movie_pk was provided.
+            title = None
+            year = None
+            imdb_id = None
+            if movie_id is not None:
+                try:
+                    from streaming.models import Movie
+                    m = Movie.objects.get(pk=movie_id)
+                    title = m.title
+                    year = m.year
+                    imdb_id = m.imdb_id
+                except Exception:
+                    title = None
+                    year = None
+                    imdb_id = None
+
+            cmd_fawesome = [
                 str(python_exe),
                 '-m', 'scrapy',
                 'crawl',
-                'oneflix',
-                '-a', f'target_url={movie_url}',
-                '-a', 'max_pages=1',  # Only scrape this one movie
+                'fawesome',
                 '-s', 'LOG_LEVEL=INFO',
                 '-s', 'CONCURRENT_REQUESTS=1',
-                '-s', 'DOWNLOAD_DELAY=2',
+                '-s', 'DOWNLOAD_DELAY=1',
             ]
-            
-            logger.info(f"Starting on-demand scrape for: {movie_url}")
-            logger.info(f"Running command: {' '.join(cmd)}")
-            
-            # Run Scrapy in the scraper directory
-            process = subprocess.Popen(
-                cmd,
-                cwd=str(scraper_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            # Wait for completion (with timeout)
-            timeout_seconds = int(os.environ.get("STREAMLINE_SCRAPE_TIMEOUT", "180"))
-            try:
-                stdout, stderr = process.communicate(timeout=timeout_seconds)
-                if process.returncode == 0:
-                    logger.info(f"Successfully scraped {movie_url}")
-                else:
-                    logger.warning(f"Scrapy returned non-zero exit code for {movie_url}: {stderr}")
-            except subprocess.TimeoutExpired:
-                process.kill()
-                logger.warning(f"Scrapy timeout for {movie_url}")
+            if movie_pk:
+                cmd_fawesome += ['-a', f'movie_pk={movie_pk}']
+            if imdb_id:
+                cmd_fawesome += ['-a', f'imdb_id={imdb_id}']
+            if title:
+                cmd_fawesome += ['-a', f'title={title}']
+            if year:
+                cmd_fawesome += ['-a', f'year={year}']
+
+            _run_spider(cmd_fawesome, label='fawesome')
                 
         except Exception as e:
             logger.error(f"Error running on-demand scraper for {movie_url}: {str(e)}")

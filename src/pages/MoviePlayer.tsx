@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Play, AlertCircle, RefreshCw, Loader2, CheckCircle, ArrowLeft } from 'lucide-react';
+import Hls from 'hls.js';
 
 // Mock API functions - replace with your actual API calls
 const fetchStreamingMovie = async (id) => {
@@ -13,6 +14,7 @@ const refreshStreamingMovieLinks = async (id) => {
 };
 
 export default function MoviePlayer() {
+
   // Get movie ID from URL or props
   const movieId = window.location.pathname.split('/').pop() || '1';
   
@@ -21,6 +23,9 @@ export default function MoviePlayer() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [selectedLink, setSelectedLink] = useState(null);
+  const [iframeError, setIframeError] = useState(false);
+  const [isLoadingVideo, setIsLoadingVideo] = useState(true);
+
   const [pollCount, setPollCount] = useState(0);
 
   // Poll for updated links when refreshing
@@ -33,6 +38,28 @@ export default function MoviePlayer() {
       return () => clearTimeout(timer);
     }
   }, [refreshing, pollCount]);
+
+  useEffect(() => {
+    loadMovie();
+  }, [movieId]);
+
+  useEffect(() => {
+    setIframeError(false);
+    setIsLoadingVideo(true);
+  }, [selectedLink?.id]);
+
+  const handleRefreshLinks = async () => {
+    try {
+      setRefreshing(true);
+      setPollCount(0);
+      await refreshStreamingMovieLinks(movieId);
+      // Start polling for results
+      setTimeout(() => loadMovie(true), 3000);
+    } catch (err) {
+      setError('Failed to refresh links');
+      setRefreshing(false);
+    }
+  };
 
   const loadMovie = async (isPolling = false) => {
     try {
@@ -64,22 +91,58 @@ export default function MoviePlayer() {
     }
   };
 
-  useEffect(() => {
-    loadMovie();
-  }, [movieId]);
+  const validLinks = movie?.links?.filter(link => link.is_active) || [];
+  const activeLink = selectedLink;
 
-  const handleRefreshLinks = async () => {
-    try {
-      setRefreshing(true);
-      setPollCount(0);
-      await refreshStreamingMovieLinks(movieId);
-      // Start polling for results
-      setTimeout(() => loadMovie(true), 3000);
-    } catch (err) {
-      setError('Failed to refresh links');
-      setRefreshing(false);
+  useEffect(() => {
+    const url = activeLink?.source_url;
+    if (!url) return;
+
+    const isDirectVideo = /\.(mp4|webm|ogg|mkv|avi|mov)(\?|$)/i.test(url);
+    const isHlsStream = /\.m3u8(\?|$)/i.test(url);
+    if (isDirectVideo || isHlsStream) return;
+
+    const timeout = setTimeout(() => {
+      if (isLoadingVideo) {
+        setIframeError(true);
+        setIsLoadingVideo(false);
+      }
+    }, 15000);
+
+    return () => clearTimeout(timeout);
+  }, [activeLink?.id, isLoadingVideo]);
+
+  useEffect(() => {
+    const url = activeLink?.source_url;
+    const videoEl: HTMLVideoElement | null = (document.getElementById('streamline-video') as HTMLVideoElement) || null;
+    if (!url || !videoEl) return;
+
+    const isHlsStream = /\.m3u8(\?|$)/i.test(url);
+    if (!isHlsStream) return;
+
+    if (Hls.isSupported()) {
+      const hls = new Hls();
+      hls.loadSource(url);
+      hls.attachMedia(videoEl);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setIsLoadingVideo(false);
+      });
+      hls.on(Hls.Events.ERROR, () => {
+        setIsLoadingVideo(false);
+        setIframeError(true);
+      });
+      return () => {
+        try {
+          hls.destroy();
+        } catch {
+        }
+      };
     }
-  };
+
+    if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      videoEl.src = url;
+    }
+  }, [activeLink?.id]);
 
   if (loading) {
     return (
@@ -114,8 +177,6 @@ export default function MoviePlayer() {
     );
   }
 
-  const validLinks = movie?.links?.filter(link => link.is_active) || [];
-
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -146,6 +207,7 @@ export default function MoviePlayer() {
 
         {/* Video Player or Status */}
         <div className="aspect-video bg-black rounded-lg overflow-hidden mb-6 relative">
+
           {refreshing ? (
             <div className="w-full h-full flex flex-col items-center justify-center text-white">
               <Loader2 className="w-16 h-16 animate-spin mb-4 text-primary" />
@@ -164,12 +226,95 @@ export default function MoviePlayer() {
               </div>
             </div>
           ) : selectedLink ? (
-            <iframe
-              src={selectedLink.source_url}
-              className="w-full h-full border-0"
-              allowFullScreen
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            />
+            (() => {
+              const url = selectedLink.source_url;
+              const is1FlixUrl = url.includes('1flix.to');
+              const isHlsStream = /\.m3u8(\?|$)/i.test(url);
+              const isDirectVideo = url.match(/\.(mp4|webm|ogg|mkv|avi|mov)(\?|$)/i);
+              const isIframeEmbed = (url.includes('embed') || url.includes('player')) && !is1FlixUrl;
+
+              if (is1FlixUrl) {
+                return (
+                  <div className="w-full h-full flex flex-col items-center justify-center gap-4 p-8">
+                    <div className="text-center space-y-2">
+                      <p className="text-lg text-white">This video cannot be embedded</p>
+                      <p className="text-sm text-gray-400">Open it on the source website</p>
+                    </div>
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-6 py-3 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors inline-flex items-center gap-2"
+                    >
+                      <Play className="w-5 h-5" />
+                      Open Source
+                    </a>
+                  </div>
+                );
+              }
+
+              if (isDirectVideo || isHlsStream) {
+                return (
+                  <div className="relative w-full h-full">
+                    {isLoadingVideo && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+                        <div className="text-center space-y-2">
+                          <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div>
+                          <p className="text-sm text-gray-400">Loading video...</p>
+                        </div>
+                      </div>
+                    )}
+                    <video
+                      id="streamline-video"
+                      controls
+                      className="w-full h-full bg-black"
+                      src={isHlsStream ? undefined : url}
+                      onLoadedData={() => setIsLoadingVideo(false)}
+                      onError={() => {
+                        setIsLoadingVideo(false);
+                        setIframeError(true);
+                      }}
+                    />
+                  </div>
+                );
+              }
+
+              if (iframeError) {
+                return (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-white gap-3 p-6">
+                    <AlertCircle className="w-16 h-16 text-yellow-500" />
+                    <p className="text-xl">Unable to load stream</p>
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-6 py-3 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors inline-flex items-center gap-2"
+                    >
+                      Open in New Tab
+                    </a>
+                  </div>
+                );
+              }
+
+              if (isIframeEmbed || true) {
+                return (
+                  <iframe
+                    src={url}
+                    className="w-full h-full border-0"
+                    allowFullScreen
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    onLoad={() => {
+                      setIsLoadingVideo(false);
+                      setIframeError(false);
+                    }}
+                    onError={() => {
+                      setIsLoadingVideo(false);
+                      setIframeError(true);
+                    }}
+                  />
+                );
+              }
+            })()
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-center text-white">
               <AlertCircle className="w-16 h-16 mb-4 text-yellow-500" />

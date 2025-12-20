@@ -25,10 +25,9 @@ class OneFlixSpider(scrapy.Spider):
     # NOTE: Keep spider name 'oneflix' so existing commands still work,
     # but we now target fmovies-co.net instead of 1flix.to
     name = "oneflix"
-    allowed_domains = ["fmovies-co.net"]
+    allowed_domains = ["1flix.to"]
     start_urls = [
-        "https://fmovies-co.net/home",
-        "https://fmovies-co.net/movie",
+        "https://1flix.to/home",
     ]
     
     # CRITICAL: Patterns to REJECT
@@ -39,14 +38,26 @@ class OneFlixSpider(scrapy.Spider):
         'twitter.com', 'x.com',
         'instagram.com', 'tiktok.com',
         'dailymotion.com', 'vimeo.com',  # Usually trailers, not full movies
-        
+
         # Movie info sites (not streaming)
         'imdb.com', 'themoviedb.org', 'tvdb.com', 'rottentomatoes.com',
-        
+
+        # AD SITES & REDIRECTS - BLOCK THESE COMPLETELY
+        '111movies.com', '123movies', 'watchmovies', 'putlocker',
+        'gomovies', 'yesmovies', 'solarmovies', 'moviesjoy',
+        'fmovies.to', 'fmovies.se', 'fmovies.ws', 'fmovies.io',
+        'flixhq.to', 'flixhq.com', 'flixhq.ws',
+        'soap2day', 's2dfree', 'vidplay', 'vidplay.online',
+        'vidsrc.me', 'vidsrc.to', 'vidsrc.pro', 'vidsrc.com',
+        'embedsoap', 'multiembed.mov', 'player-cdn.com',
+        'vidnext.net', 'vidplay.online', 'membed.net',
+        'vidstream.pro', 'vidstream.to', 'vidstream.me',
+        'embed.su', 'embed.moe', 'embed.icu',
+
         # Known NON-streaming / anti-bot / tracking / banner domains
         'google.com/recaptcha', 'www.google.com/recaptcha', 'recaptcha',
         'sysmeasuring.net', 'anicrush.to',
-        
+
         # Site navigation (for fmovies-co.net)
         'fmovies-co.net/home',
         'fmovies-co.net/movie',
@@ -93,6 +104,8 @@ class OneFlixSpider(scrapy.Spider):
         
         # On-demand scraping mode
         self.target_url = kwargs.get('target_url', None)
+        self.movie_pk = kwargs.get('movie_pk', None)
+        self.forced_imdb_id = kwargs.get('imdb_id', None)
         self.on_demand_mode = bool(self.target_url)
         
         if self.on_demand_mode:
@@ -287,6 +300,7 @@ class OneFlixSpider(scrapy.Spider):
         logger.info(f"🎬 Parsing movie: {response.url}")
         
         item = StreamingItem()
+        item["movie_pk"] = self.movie_pk
         item["original_detail_url"] = response.url
         
         # Extract title
@@ -294,11 +308,15 @@ class OneFlixSpider(scrapy.Spider):
         title = title.strip()
         item["title"] = title
         
-        # Extract IMDB ID from URL
-        movie_slug = response.url.rstrip("/").split("/")[-1]
-        item["imdb_id"] = movie_slug
+        extracted_tt = self._extract_imdb_tt(response)
+        if extracted_tt:
+            item["imdb_id"] = extracted_tt
+        elif isinstance(self.forced_imdb_id, str) and self.forced_imdb_id.startswith("tt"):
+            item["imdb_id"] = self.forced_imdb_id
+        else:
+            item["imdb_id"] = response.url.rstrip("/").split("/")[-1]
         
-        logger.info(f"📝 Title: {title} | ID: {movie_slug}")
+        logger.info(f"📝 Title: {title} | ID: {item['imdb_id']}")
         
         # Extract year
         year = None
@@ -346,6 +364,16 @@ class OneFlixSpider(scrapy.Spider):
         item["links"] = links
         
         yield item
+
+    def _extract_imdb_tt(self, response: TextResponse):
+        text = response.text or ""
+        m = re.search(r"imdb\.com/title/(tt\d{7,8})", text, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        m = re.search(r"\b(tt\d{7,8})\b", text)
+        if m:
+            return m.group(1)
+        return None
 
     def _is_youtube_url(self, url: str) -> bool:
         """Check if URL is a YouTube link"""
@@ -468,9 +496,16 @@ class OneFlixSpider(scrapy.Spider):
                                 const matches = text.matchAll(pattern);
                                 for (const match of matches) {
                                     const url = match[1];
-                                    if (url && !url.includes('1flix.to') && 
-                                        !url.includes('youtube') && !url.includes('facebook') && 
-                                        !url.includes('twitter') && !url.includes('instagram')) {
+                                    // BLOCK AD SITES in scripts too
+                                    const isAdSite = url.includes('111movies.com') || url.includes('123movies') ||
+                                                    url.includes('vidplay.online') || url.includes('vidsrc.me') ||
+                                                    url.includes('embedsoap') || url.includes('multiembed.mov') ||
+                                                    url.includes('soap2day') || url.includes('flixhq.to');
+
+                                    if (url && !url.includes('fmovies-co.net') &&
+                                        !url.includes('youtube') && !url.includes('facebook') &&
+                                        !url.includes('twitter') && !url.includes('instagram') &&
+                                        !isAdSite) {
                                         sources.add(url);
                                     }
                                 }
