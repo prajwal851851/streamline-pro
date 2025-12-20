@@ -12,39 +12,91 @@ class DjangoItemPipeline:
         """Synchronous processing of item in a separate thread"""
         adapter = ItemAdapter(item)
 
+        # Determine if this is old MovieItem or new StreamingItem format
+        if 'stream_url' in adapter.keys():
+            # OLD FORMAT from goojara spider (MovieItem)
+            return self._process_old_format(adapter, spider)
+        elif 'links' in adapter.keys():
+            # NEW FORMAT from oneflix/fawesome spiders (StreamingItem)
+            return self._process_new_format(adapter, spider)
+        else:
+            spider.logger.warning(f"Unknown item format: {adapter.keys()}")
+            return item
+
+    def _process_old_format(self, adapter, spider):
+        """Process old MovieItem format (goojara spider)"""
         # Create or update the Movie
         movie_defaults = {
             'title': adapter.get('title'),
             'year': adapter.get('year'),
             'synopsis': adapter.get('synopsis'),
             'poster_url': adapter.get('poster_url'),
-            'source_url': adapter.get('source_url'),
-            'source_site': adapter.get('source_site'),
+            'type': 'movie',  # goojara only does movies
+            'original_detail_url': adapter.get('source_url'),  # Map source_url to original_detail_url
         }
+        
         movie, created = Movie.objects.update_or_create(
             imdb_id=adapter.get('imdb_id'),
             defaults=movie_defaults
         )
 
-        # Create or update the StreamingLink with server_name
+        # Create or update the StreamingLink
         if adapter.get('stream_url'):
             link_defaults = {
-                'server_name': adapter.get('server_name', 'Unknown'),
-                'quality': adapter.get('quality'),
-                'language': adapter.get('language'),
+                'quality': adapter.get('quality', 'HD'),
+                'language': adapter.get('language', 'EN'),
                 'is_active': True,
-                'error_message': '',
-                'check_count': 0,
             }
+            
             link, link_created = StreamingLink.objects.update_or_create(
                 movie=movie,
-                stream_url=adapter.get('stream_url'),
+                source_url=adapter.get('stream_url'),
                 defaults=link_defaults
             )
             
             if link_created:
-                spider.logger.info(f'Created new {link.server_name} link for {movie.title}')
+                spider.logger.info(f'Created new link for {movie.title}')
             else:
-                spider.logger.info(f'Updated {link.server_name} link for {movie.title}')
+                spider.logger.info(f'Updated link for {movie.title}')
         
-        return item
+        return adapter.asdict()
+
+    def _process_new_format(self, adapter, spider):
+        """Process new StreamingItem format (oneflix/fawesome spiders)"""
+        # Create or update the Movie
+        movie_defaults = {
+            'title': adapter.get('title'),
+            'year': adapter.get('year'),
+            'type': adapter.get('type', 'movie'),
+            'synopsis': adapter.get('synopsis'),
+            'poster_url': adapter.get('poster_url'),
+            'original_detail_url': adapter.get('original_detail_url'),
+        }
+        
+        movie, created = Movie.objects.update_or_create(
+            imdb_id=adapter.get('imdb_id'),
+            defaults=movie_defaults
+        )
+
+        # Process streaming links
+        links = adapter.get('links', [])
+        if links:
+            for link_data in links:
+                link_defaults = {
+                    'quality': link_data.get('quality', 'HD'),
+                    'language': link_data.get('language', 'EN'),
+                    'is_active': link_data.get('is_active', True),
+                }
+                
+                link, link_created = StreamingLink.objects.update_or_create(
+                    movie=movie,
+                    source_url=link_data.get('source_url'),
+                    defaults=link_defaults
+                )
+                
+                if link_created:
+                    spider.logger.info(f'Created new link for {movie.title}')
+        else:
+            spider.logger.warning(f'No streaming links for {movie.title}')
+        
+        return adapter.asdict()

@@ -23,8 +23,9 @@ ROBOTSTXT_OBEY = False
 CONCURRENT_REQUESTS = 2
 DOWNLOAD_DELAY = 0.5
 
+# FIXED: Changed from DjangoWriterPipeline to DjangoItemPipeline
 ITEM_PIPELINES = {
-    "scraper.pipelines.DjangoWriterPipeline": 300,
+    "scraper.pipelines.DjangoItemPipeline": 300,
 }
 
 # Simple user agent; customize for your target site if required.
@@ -46,4 +47,3 @@ PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 60000
 # Limit concurrency to reduce timeouts and avoid hitting anti-bot too hard.
 PLAYWRIGHT_MAX_CONTEXTS = 1
 PLAYWRIGHT_MAX_PAGES_PER_CONTEXT = 2
-
