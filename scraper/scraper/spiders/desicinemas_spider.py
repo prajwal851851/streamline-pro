@@ -14,13 +14,13 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException
-from scraper.items import MovieItem
+from scraper.items import StreamingItem
 import time
 import re
 import os
 import django
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'movie_scrape.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'MovieBackends.settings')
 django.setup()
 
 from streaming.models import Movie, StreamingLink
@@ -173,16 +173,12 @@ class DesiCinemasSpider(scrapy.Spider):
             )
             
             # Find movie links - DesiCinemas uses article cards with links
-            # Common selectors: .post-item, .item-movie, article.post
-            movie_links = sel_response.css('article.post h2 a::attr(href)').getall()
+            # Actual structure: <article class="TPost C"><h2 class="Title"><a href="...">
+            movie_links = sel_response.css('article.TPost h2.Title a::attr(href)').getall()
             
-            # Alternative selectors if first one doesn't work
+            # Alternative: Get all article links
             if not movie_links:
-                movie_links = sel_response.css('.post-title a::attr(href)').getall()
-            if not movie_links:
-                movie_links = sel_response.css('h2.entry-title a::attr(href)').getall()
-            if not movie_links:
-                movie_links = sel_response.css('.item-movie a::attr(href)').getall()
+                movie_links = sel_response.css('article.TPost a.TPlay::attr(href)').getall()
             
             self.logger.info(f'Found {len(movie_links)} movie links on page {current_page}')
             
@@ -263,11 +259,10 @@ class DesiCinemasSpider(scrapy.Spider):
             )
             
             # Extract movie info
-            title = sel_response.css('h1.entry-title::text').get()
+            # Title is in h1.Title
+            title = sel_response.css('h1.Title::text').get()
             if not title:
                 title = sel_response.css('h1::text').get()
-            if not title:
-                title = sel_response.css('.post-title::text').get()
             
             title = title.strip() if title else 'Unknown'
             
@@ -286,62 +281,56 @@ class DesiCinemasSpider(scrapy.Spider):
                     if year_match:
                         year = int(year_match.group())
             
-            # Synopsis
-            synopsis = sel_response.css('.entry-content p::text').get()
+            # Synopsis - look in Description div or meta
+            synopsis = sel_response.css('.Description p::text').get()
+            if not synopsis:
+                synopsis = sel_response.css('meta[property="og:description"]::attr(content)').get()
             if not synopsis:
                 synopsis = sel_response.css('meta[name="description"]::attr(content)').get()
             synopsis = synopsis.strip() if synopsis else ''
             
-            # Poster
-            poster = sel_response.css('.post-thumbnail img::attr(src)').get()
+            # Poster - look in TPMvCn or meta
+            poster = sel_response.css('.TPMvCn img::attr(data-src)').get()
+            if not poster:
+                poster = sel_response.css('.TPMvCn img::attr(src)').get()
             if not poster:
                 poster = sel_response.css('meta[property="og:image"]::attr(content)').get()
             poster_url = response.urljoin(poster) if poster else ''
             
             # Extract streaming links
-            # DesiCinemas typically embeds iframes or has download buttons
+            # DesiCinemas embeds streaming links in various ways
             streaming_links = []
             
-            # Look for iframes
+            # Method 1: Look for iframes (most common)
             iframes = sel_response.css('iframe::attr(src)').getall()
             for iframe_src in iframes:
                 if iframe_src and 'desicinemas' not in iframe_src.lower():
                     streaming_links.append({
-                        'url': iframe_src,
-                        'server': self._detect_server(iframe_src),
+                        'source_url': response.urljoin(iframe_src),
                         'quality': 'HD',
-                        'language': 'Hindi'
+                        'language': 'Hindi',
+                        'is_active': True
                     })
             
-            # Look for download/watch buttons
-            buttons = sel_response.css('a[href*="player"], a[href*="stream"], a.download-btn::attr(href)').getall()
-            for btn_href in buttons:
-                if btn_href and 'desicinemas' not in btn_href.lower():
-                    full_link = response.urljoin(btn_href)
-                    streaming_links.append({
-                        'url': full_link,
-                        'server': self._detect_server(full_link),
-                        'quality': 'HD',
-                        'language': 'Hindi'
-                    })
-            
-            # Look for embedded players in post content
-            player_links = sel_response.css('.entry-content a[href*="http"]::attr(href)').getall()
+            # Method 2: Look for player links in article content
+            player_links = sel_response.css('article a[href*="http"]::attr(href)').getall()
             for link in player_links:
-                if any(domain in link.lower() for domain in ['streamtape', 'doodstream', 'vidsrc', 'mixdrop', 'upstream']):
+                link_lower = link.lower()
+                # Check if it's a known streaming domain
+                if any(domain in link_lower for domain in ['streamtape', 'doodstream', 'dood', 'vidsrc', 'mixdrop', 'upstream', 'filemoon', 'streamwish']):
                     streaming_links.append({
-                        'url': link,
-                        'server': self._detect_server(link),
+                        'source_url': link,
                         'quality': 'HD',
-                        'language': 'Hindi'
+                        'language': 'Hindi',
+                        'is_active': True
                     })
             
             # Remove duplicates
             seen = set()
             unique_links = []
             for link in streaming_links:
-                if link['url'] not in seen:
-                    seen.add(link['url'])
+                if link['source_url'] not in seen:
+                    seen.add(link['source_url'])
                     unique_links.append(link)
             
             streaming_links = unique_links
@@ -356,44 +345,20 @@ class DesiCinemasSpider(scrapy.Spider):
             
             # Yield items for each streaming link
             for stream_link in streaming_links:
-                item = MovieItem()
-                item['source_site'] = 'desicinemas.to'
-                item['source_url'] = response.url
+                item = StreamingItem()
+                item['original_detail_url'] = response.url
                 item['imdb_id'] = imdb_id
                 item['title'] = title
                 item['year'] = year
+                item['type'] = 'movie'
                 item['synopsis'] = synopsis
                 item['poster_url'] = poster_url
-                item['stream_url'] = stream_link['url']
-                item['server_name'] = stream_link['server']
-                item['quality'] = stream_link['quality']
-                item['language'] = stream_link['language']
+                item['links'] = [stream_link]  # StreamingItem expects a list of links
                 
-                self.logger.info(f'✓ {title} - {stream_link["server"]} ({stream_link["quality"]})')
+                self.logger.info(f'✓ {title} - {stream_link["quality"]}')
                 yield item
                 
         except Exception as e:
             self.logger.error(f'Error parsing movie page: {e}')
             import traceback
             self.logger.error(traceback.format_exc())
-
-    def _detect_server(self, url):
-        """Detect streaming server from URL"""
-        url_lower = url.lower()
-        
-        if 'streamtape' in url_lower:
-            return 'Streamtape'
-        elif 'dood' in url_lower:
-            return 'Doodstream'
-        elif 'vidsrc' in url_lower:
-            return 'Vidsrc'
-        elif 'mixdrop' in url_lower:
-            return 'Mixdrop'
-        elif 'upstream' in url_lower:
-            return 'UpStream'
-        elif 'filemoon' in url_lower:
-            return 'FileMoon'
-        elif 'streamwish' in url_lower:
-            return 'StreamWish'
-        else:
-            return 'Unknown'
