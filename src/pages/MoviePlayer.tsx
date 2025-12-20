@@ -1,23 +1,46 @@
+/**
+ * FILE LOCATION: src/pages/MoviePlayer.tsx
+ * 
+ * This is the complete MoviePlayer component that plays streaming videos
+ * within your site without redirecting to external tabs.
+ * 
+ * USAGE:
+ * 1. Replace the content of src/pages/MoviePlayer.tsx with this file
+ * 2. Make sure you have the following dependencies installed:
+ *    - hls.js (already in your project)
+ *    - lucide-react (already in your project)
+ * 3. The component will be accessible at /watch/:id route
+ */
+
 import { useState, useEffect } from 'react';
 import { Play, AlertCircle, RefreshCw, Loader2, CheckCircle, ArrowLeft } from 'lucide-react';
 import Hls from 'hls.js';
 
-// Mock API functions - replace with your actual API calls
+// ============================================================================
+// API FUNCTIONS - Replace these with your actual API calls
+// ============================================================================
+
 const fetchStreamingMovie = async (id) => {
-  // Replace with actual API call
+  // TODO: Replace with your actual API endpoint
+  // Example: return fetch(`${API_BASE}/streaming/movies/${id}/`).then(r => r.json());
   return fetch(`/api/streaming/movies/${id}/`).then(r => r.json());
 };
 
 const refreshStreamingMovieLinks = async (id) => {
-  // Replace with actual API call
+  // TODO: Replace with your actual API endpoint
+  // Example: return fetch(`${API_BASE}/streaming/movies/${id}/refresh_links/`, { method: 'POST' }).then(r => r.json());
   return fetch(`/api/streaming/movies/${id}/refresh_links/`, { method: 'POST' }).then(r => r.json());
 };
 
-export default function MoviePlayer() {
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
 
-  // Get movie ID from URL or props
+export default function MoviePlayer() {
+  // Get movie ID from URL (e.g., /watch/123)
   const movieId = window.location.pathname.split('/').pop() || '1';
   
+  // State management
   const [movie, setMovie] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -25,8 +48,11 @@ export default function MoviePlayer() {
   const [selectedLink, setSelectedLink] = useState(null);
   const [iframeError, setIframeError] = useState(false);
   const [isLoadingVideo, setIsLoadingVideo] = useState(true);
-
   const [pollCount, setPollCount] = useState(0);
+
+  // ============================================================================
+  // EFFECTS
+  // ============================================================================
 
   // Poll for updated links when refreshing
   useEffect(() => {
@@ -39,19 +65,83 @@ export default function MoviePlayer() {
     }
   }, [refreshing, pollCount]);
 
+  // Load movie on mount
   useEffect(() => {
     loadMovie();
   }, [movieId]);
 
+  // Reset error state when link changes
   useEffect(() => {
     setIframeError(false);
     setIsLoadingVideo(true);
   }, [selectedLink?.id]);
 
+  // Set loading timeout - if iframe doesn't load in 20 seconds, show error
+  useEffect(() => {
+    const url = activeLink?.source_url;
+    if (!url) return;
+
+    const isDirectVideo = /\.(mp4|webm|ogg|mkv|avi|mov)(\?|$)/i.test(url);
+    const isHlsStream = /\.m3u8(\?|$)/i.test(url);
+    
+    // Don't set timeout for direct videos or HLS streams
+    if (isDirectVideo || isHlsStream) return;
+
+    const timeout = setTimeout(() => {
+      if (isLoadingVideo) {
+        setIframeError(true);
+        setIsLoadingVideo(false);
+      }
+    }, 20000); // 20 seconds timeout
+
+    return () => clearTimeout(timeout);
+  }, [activeLink?.id, isLoadingVideo]);
+
+  // Handle HLS video playback
+  useEffect(() => {
+    const url = activeLink?.source_url;
+    const videoEl = document.getElementById('streamline-video');
+    if (!url || !videoEl) return;
+
+    const isHlsStream = /\.m3u8(\?|$)/i.test(url);
+    if (!isHlsStream) return;
+
+    // Use HLS.js for browsers that don't support native HLS
+    if (Hls.isSupported()) {
+      const hls = new Hls();
+      hls.loadSource(url);
+      hls.attachMedia(videoEl);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setIsLoadingVideo(false);
+      });
+      hls.on(Hls.Events.ERROR, () => {
+        setIsLoadingVideo(false);
+        setIframeError(true);
+      });
+      return () => {
+        try {
+          hls.destroy();
+        } catch {}
+      };
+    }
+
+    // Use native HLS support (Safari)
+    if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      videoEl.src = url;
+    }
+  }, [activeLink?.id]);
+
+  // ============================================================================
+  // HANDLERS
+  // ============================================================================
+
   const handleRefreshLinks = async () => {
+    if (!movieId || refreshing) return;
+    
+    setRefreshing(true);
+    setPollCount(0);
+    
     try {
-      setRefreshing(true);
-      setPollCount(0);
       await refreshStreamingMovieLinks(movieId);
       // Start polling for results
       setTimeout(() => loadMovie(true), 3000);
@@ -64,6 +154,7 @@ export default function MoviePlayer() {
   const loadMovie = async (isPolling = false) => {
     try {
       if (!isPolling) setLoading(true);
+      
       const data = await fetchStreamingMovie(movieId);
       setMovie(data);
       
@@ -91,58 +182,16 @@ export default function MoviePlayer() {
     }
   };
 
+  // ============================================================================
+  // COMPUTED VALUES
+  // ============================================================================
+
   const validLinks = movie?.links?.filter(link => link.is_active) || [];
   const activeLink = selectedLink;
 
-  useEffect(() => {
-    const url = activeLink?.source_url;
-    if (!url) return;
-
-    const isDirectVideo = /\.(mp4|webm|ogg|mkv|avi|mov)(\?|$)/i.test(url);
-    const isHlsStream = /\.m3u8(\?|$)/i.test(url);
-    if (isDirectVideo || isHlsStream) return;
-
-    const timeout = setTimeout(() => {
-      if (isLoadingVideo) {
-        setIframeError(true);
-        setIsLoadingVideo(false);
-      }
-    }, 15000);
-
-    return () => clearTimeout(timeout);
-  }, [activeLink?.id, isLoadingVideo]);
-
-  useEffect(() => {
-    const url = activeLink?.source_url;
-    const videoEl: HTMLVideoElement | null = (document.getElementById('streamline-video') as HTMLVideoElement) || null;
-    if (!url || !videoEl) return;
-
-    const isHlsStream = /\.m3u8(\?|$)/i.test(url);
-    if (!isHlsStream) return;
-
-    if (Hls.isSupported()) {
-      const hls = new Hls();
-      hls.loadSource(url);
-      hls.attachMedia(videoEl);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setIsLoadingVideo(false);
-      });
-      hls.on(Hls.Events.ERROR, () => {
-        setIsLoadingVideo(false);
-        setIframeError(true);
-      });
-      return () => {
-        try {
-          hls.destroy();
-        } catch {
-        }
-      };
-    }
-
-    if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-      videoEl.src = url;
-    }
-  }, [activeLink?.id]);
+  // ============================================================================
+  // RENDER - LOADING STATE
+  // ============================================================================
 
   if (loading) {
     return (
@@ -154,6 +203,10 @@ export default function MoviePlayer() {
       </div>
     );
   }
+
+  // ============================================================================
+  // RENDER - ERROR STATE
+  // ============================================================================
 
   if (error) {
     return (
@@ -176,6 +229,10 @@ export default function MoviePlayer() {
       </div>
     );
   }
+
+  // ============================================================================
+  // RENDER - MAIN CONTENT
+  // ============================================================================
 
   return (
     <div className="min-h-screen bg-background">
@@ -205,10 +262,12 @@ export default function MoviePlayer() {
           )}
         </div>
 
-        {/* Video Player or Status */}
+        {/* ============================================================================ */}
+        {/* VIDEO PLAYER OR STATUS                                                      */}
+        {/* ============================================================================ */}
         <div className="aspect-video bg-black rounded-lg overflow-hidden mb-6 relative">
-
           {refreshing ? (
+            // REFRESHING STATE - Searching for links
             <div className="w-full h-full flex flex-col items-center justify-center text-white">
               <Loader2 className="w-16 h-16 animate-spin mb-4 text-primary" />
               <p className="text-xl mb-2">Finding streaming links...</p>
@@ -226,6 +285,7 @@ export default function MoviePlayer() {
               </div>
             </div>
           ) : selectedLink ? (
+            // VIDEO PLAYER - When we have a link
             (() => {
               const url = selectedLink.source_url;
               const is1FlixUrl = url.includes('1flix.to');
@@ -233,26 +293,42 @@ export default function MoviePlayer() {
               const isDirectVideo = url.match(/\.(mp4|webm|ogg|mkv|avi|mov)(\?|$)/i);
               const isIframeEmbed = (url.includes('embed') || url.includes('player')) && !is1FlixUrl;
 
+              // 1FLIX.TO HANDLER - Try to embed even though it blocks iframes
               if (is1FlixUrl) {
                 return (
-                  <div className="w-full h-full flex flex-col items-center justify-center gap-4 p-8">
-                    <div className="text-center space-y-2">
-                      <p className="text-lg text-white">This video cannot be embedded</p>
-                      <p className="text-sm text-gray-400">Open it on the source website</p>
-                    </div>
-                    <a
-                      href={url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-6 py-3 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors inline-flex items-center gap-2"
-                    >
-                      <Play className="w-5 h-5" />
-                      Open Source
-                    </a>
+                  <div className="relative w-full h-full">
+                    {isLoadingVideo && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+                        <div className="text-center space-y-2">
+                          <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div>
+                          <p className="text-sm text-gray-400">Loading video...</p>
+                        </div>
+                      </div>
+                    )}
+                    {iframeError && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/90 z-10">
+                        <AlertCircle className="w-12 h-12 text-yellow-500" />
+                        <p className="text-lg text-white">This stream is blocked from embedding</p>
+                        <p className="text-sm text-gray-400">Try selecting another link from the list below</p>
+                      </div>
+                    )}
+                    <iframe
+                      src={url}
+                      className="w-full h-full border-0"
+                      allowFullScreen
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      sandbox="allow-same-origin allow-scripts allow-forms"
+                      onLoad={() => setIsLoadingVideo(false)}
+                      onError={() => {
+                        setIsLoadingVideo(false);
+                        setIframeError(true);
+                      }}
+                    />
                   </div>
                 );
               }
 
+              // DIRECT VIDEO FILE HANDLER - MP4, WebM, etc.
               if (isDirectVideo || isHlsStream) {
                 return (
                   <div className="relative w-full h-full">
@@ -279,43 +355,80 @@ export default function MoviePlayer() {
                 );
               }
 
+              // ERROR STATE - When iframe fails
               if (iframeError) {
                 return (
                   <div className="w-full h-full flex flex-col items-center justify-center text-white gap-3 p-6">
                     <AlertCircle className="w-16 h-16 text-yellow-500" />
-                    <p className="text-xl">Unable to load stream</p>
-                    <a
-                      href={url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-6 py-3 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors inline-flex items-center gap-2"
+                    <p className="text-xl">Stream temporarily unavailable</p>
+                    <p className="text-sm text-gray-400 text-center max-w-md">
+                      This link may be temporarily down. Please try another server from the list below, or click Refresh Links to find new sources.
+                    </p>
+                    <button
+                      onClick={() => {
+                        setIframeError(false);
+                        setIsLoadingVideo(true);
+                      }}
+                      className="px-4 py-2 bg-secondary text-foreground rounded-md hover:bg-secondary/80 transition-colors"
                     >
-                      Open in New Tab
-                    </a>
+                      Try Again
+                    </button>
                   </div>
                 );
               }
 
+              // DEFAULT IFRAME HANDLER - For all other embed URLs
               if (isIframeEmbed || true) {
                 return (
-                  <iframe
-                    src={url}
-                    className="w-full h-full border-0"
-                    allowFullScreen
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    onLoad={() => {
-                      setIsLoadingVideo(false);
-                      setIframeError(false);
-                    }}
-                    onError={() => {
-                      setIsLoadingVideo(false);
-                      setIframeError(true);
-                    }}
-                  />
+                  <div className="relative w-full h-full">
+                    {isLoadingVideo && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+                        <div className="text-center space-y-2">
+                          <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div>
+                          <p className="text-sm text-gray-400">Loading stream...</p>
+                        </div>
+                      </div>
+                    )}
+                    {iframeError && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/90 z-10">
+                        <AlertCircle className="w-12 h-12 text-yellow-500" />
+                        <p className="text-lg text-white">Stream unavailable</p>
+                        <p className="text-sm text-gray-400 text-center max-w-md px-4">
+                          This server may be down. Try another link below or refresh to find new sources.
+                        </p>
+                        <button
+                          onClick={() => {
+                            setIframeError(false);
+                            setIsLoadingVideo(true);
+                          }}
+                          className="px-4 py-2 bg-secondary text-foreground rounded-md hover:bg-secondary/80 transition-colors"
+                        >
+                          Retry This Link
+                        </button>
+                      </div>
+                    )}
+                    <iframe
+                      src={url}
+                      className="w-full h-full border-0"
+                      allowFullScreen
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      referrerPolicy="origin"
+                      sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                      onLoad={() => {
+                        setIsLoadingVideo(false);
+                        setIframeError(false);
+                      }}
+                      onError={() => {
+                        setIsLoadingVideo(false);
+                        setIframeError(true);
+                      }}
+                    />
+                  </div>
                 );
               }
             })()
           ) : (
+            // NO LINKS STATE - When no streaming links are available
             <div className="w-full h-full flex flex-col items-center justify-center text-white">
               <AlertCircle className="w-16 h-16 mb-4 text-yellow-500" />
               <p className="text-xl mb-2">No streaming links available</p>
@@ -333,7 +446,9 @@ export default function MoviePlayer() {
           )}
         </div>
 
-        {/* Available Links */}
+        {/* ============================================================================ */}
+        {/* AVAILABLE LINKS SECTION                                                     */}
+        {/* ============================================================================ */}
         {validLinks.length > 0 && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
@@ -386,7 +501,7 @@ export default function MoviePlayer() {
           </div>
         )}
 
-        {/* Info Message */}
+        {/* Info Message when refreshing */}
         {movie?._refreshing && (
           <div className="mt-4 border border-border rounded-lg p-4 bg-card">
             <div className="flex items-start gap-3">
