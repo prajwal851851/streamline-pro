@@ -1,14 +1,15 @@
+# scraper/scraper/items.py
 import scrapy
 
-
-class StreamingItem(scrapy.Item):
-    movie_pk = scrapy.Field()
+class MovieItem(scrapy.Item):
     imdb_id = scrapy.Field()
     title = scrapy.Field()
     year = scrapy.Field()
-    type = scrapy.Field()
-    poster_url = scrapy.Field()
     synopsis = scrapy.Field()
-    original_detail_url = scrapy.Field()  # Original source URL from 1flix.to
-    links = scrapy.Field()  # Expect list of dicts: [{quality, language, source_url}]
-
+    poster_url = scrapy.Field()
+    source_url = scrapy.Field()
+    source_site = scrapy.Field()
+    stream_url = scrapy.Field()
+    server_name = scrapy.Field()
+    quality = scrapy.Field()
+    language = scrapy.Field()
